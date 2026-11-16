@@ -28,6 +28,8 @@ on:
           - identity
           - identity-v2
           - cursor-hide
+          - cursor-color
+          - cursor-software
           - gdi
           - both
 
@@ -49,9 +51,22 @@ jobs:
     timeout-minutes: 60
     env:
       PATCH: ${{ github.event.inputs.patch || 'none' }}
-      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
+      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'cursor-color' && 'cursor-color') || (github.event.inputs.patch == 'cursor-software' && 'cursor-software') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select DriverVer for variant
+        shell: bash
+        run: |
+          case "${{ github.event.inputs.patch }}" in
+            cursor-color) ver=20.15.2.4 ;;
+            cursor-software) ver=20.15.2.5 ;;
+            *) ver="" ;;
+          esac
+          if [ -n "$ver" ]; then
+            sed -i "s/^INF_DRIVER_VER=.*/INF_DRIVER_VER=$ver/" versions.env
+            echo "INF_DRIVER_VER=$ver" >> "$GITHUB_ENV"
+          fi
 
       - name: Load pinned versions
         run: grep -vE '^[[:space:]]*(#|$)' versions.env >> "$GITHUB_ENV"
@@ -121,9 +136,22 @@ jobs:
     timeout-minutes: 30
     env:
       PATCH: ${{ github.event.inputs.patch || 'none' }}
-      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
+      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'cursor-color' && 'cursor-color') || (github.event.inputs.patch == 'cursor-software' && 'cursor-software') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select DriverVer for variant
+        shell: bash
+        run: |
+          case "${{ github.event.inputs.patch }}" in
+            cursor-color) ver=20.15.2.4 ;;
+            cursor-software) ver=20.15.2.5 ;;
+            *) ver="" ;;
+          esac
+          if [ -n "$ver" ]; then
+            sed -i "s/^INF_DRIVER_VER=.*/INF_DRIVER_VER=$ver/" versions.env
+            echo "INF_DRIVER_VER=$ver" >> "$GITHUB_ENV"
+          fi
 
       - uses: actions/download-artifact@v4
         with:

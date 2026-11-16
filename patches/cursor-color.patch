@@ -1,0 +1,19 @@
+diff --git a/gpu-wddm/src/adapter.rs b/gpu-wddm/src/adapter.rs
+index aa2ebda..3502292 100644
+--- a/gpu-wddm/src/adapter.rs
++++ b/gpu-wddm/src/adapter.rs
+@@ -1422,9 +1422,12 @@ impl Adapter {
+ 
+                 driver_caps.MaxPointerWidth = 64;
+                 driver_caps.MaxPointerHeight = 64;
+-                driver_caps.PointerCaps.set_Monochrome(true);
++                // A2: only the 32bpp ARGB colour-pointer path. Monochrome and
++                // masked-colour force the KMD to synthesise alpha from a mask, which
++                // is where an opaque 64x64 cursor background comes from.
++                driver_caps.PointerCaps.set_Monochrome(false);
+                 driver_caps.PointerCaps.set_Color(true);
+-                driver_caps.PointerCaps.set_MaskedColor(true);
++                driver_caps.PointerCaps.set_MaskedColor(false);
+ 
+                 Ok(())
+             },

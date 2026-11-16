@@ -1,0 +1,24 @@
+diff --git a/gpu-wddm/src/adapter.rs b/gpu-wddm/src/adapter.rs
+index aa2ebda..734e773 100644
+--- a/gpu-wddm/src/adapter.rs
++++ b/gpu-wddm/src/adapter.rs
+@@ -1420,11 +1420,14 @@ impl Adapter {
+                 driver_caps.SupportSmoothRotation = false as _;
+                 driver_caps.SupportNonVGA = state.is_vga as _;
+ 
+-                driver_caps.MaxPointerWidth = 64;
+-                driver_caps.MaxPointerHeight = 64;
+-                driver_caps.PointerCaps.set_Monochrome(true);
+-                driver_caps.PointerCaps.set_Color(true);
+-                driver_caps.PointerCaps.set_MaskedColor(true);
++                // B: advertise no hardware pointer at all. The OS then composites the
++                // cursor into the primary surface, bypassing virtio-gpu's cursor plane
++                // and the Android cursor SurfaceView entirely.
++                driver_caps.MaxPointerWidth = 0;
++                driver_caps.MaxPointerHeight = 0;
++                driver_caps.PointerCaps.set_Monochrome(false);
++                driver_caps.PointerCaps.set_Color(false);
++                driver_caps.PointerCaps.set_MaskedColor(false);
+ 
+                 Ok(())
+             },
