@@ -23,7 +23,7 @@ index aa2ebda..3c64d25 100644
          let luid = unsafe { transmute(start_info.AdapterLuid) };
 diff --git a/gpu-wddm/src/identity.rs b/gpu-wddm/src/identity.rs
 new file mode 100644
-index 0000000..1806842
+index 0000000..dafe267
 --- /dev/null
 +++ b/gpu-wddm/src/identity.rs
 @@ -0,0 +1,277 @@
@@ -272,7 +272,7 @@ index 0000000..1806842
 +/// the `Device Parameters` subkey.  AddDevice is the earliest KMD callback with
 +/// a PDO and runs before the adapter is started, so the value is in place
 +/// before any DXCore consumer can cache it.
-+pub fn publish_enum_devicedesc(pdo: *mut DEVICE_OBJECT) {
++pub fn publish_enum_devicedesc(pdo: *mut wdk::dxgkrnl::_DEVICE_OBJECT) {
 +    if pdo.is_null() || unsafe { KeGetCurrentIrql() } != 0 {
 +        return;
 +    }
@@ -284,7 +284,7 @@ index 0000000..1806842
 +    let mut key = null_mut();
 +    let status = unsafe {
 +        io_open_device_registry_key(
-+            pdo,
++            pdo.cast::<DEVICE_OBJECT>(),
 +            PLUGPLAY_REGKEY_DEVICE_FLAG,
 +            KEY_SET_VALUE,
 +            &mut key,
