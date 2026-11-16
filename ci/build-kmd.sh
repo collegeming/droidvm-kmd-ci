@@ -43,9 +43,10 @@ case "$PATCH_KIND" in
   cursor-color) PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch) ;;
   cursor-software) PATCH_FILES=(gpu-identity-v2.patch cursor-software.patch) ;;
   all)        PATCH_FILES=(gpu-identity-v2.patch cursor-hide-zero.patch kmd-attach-detach.patch) ;;
+  final-a2)   PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch) ;;
   gdi)        PATCH_FILES=(kmd-attach-detach.patch) ;;
   both)       PATCH_FILES=(gpu-identity.patch kmd-attach-detach.patch) ;;
-  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|identity-v2|cursor-hide|cursor-color|cursor-software|all|gdi|both)"; exit 2 ;;
+  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|identity-v2|cursor-hide|cursor-color|cursor-software|all|final-a2|gdi|both)"; exit 2 ;;
 esac
 {
   echo "variant=$VARIANT patch=$PATCH_KIND"
