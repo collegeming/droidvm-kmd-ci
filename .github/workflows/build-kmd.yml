@@ -99,10 +99,10 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$NIGHTLY" >> "$GITHUB_ENV"
 
       - name: WDK / SDK headers from NuGet
-        run: ci/setup-winsdk.sh winsdk
+        run: bash ci/setup-winsdk.sh winsdk
 
       - name: Build stock or patched KMD
-        run: ci/build-kmd.sh
+        run: bash ci/build-kmd.sh
 
       - uses: actions/upload-artifact@v4
         with:
