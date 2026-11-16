@@ -1,0 +1,398 @@
+diff --git a/gpu-wddm/src/adapter.rs b/gpu-wddm/src/adapter.rs
+index aa2ebda..bedb22b 100644
+--- a/gpu-wddm/src/adapter.rs
++++ b/gpu-wddm/src/adapter.rs
+@@ -1155,7 +1155,9 @@ impl Adapter {
+             }
+         }
+ 
+-        // TODO: write registry info
++        // The adapter software-key path arrives with DXGK_DEVICE_INFO below;
++        // identity::publish() writes the host-provided SMBIOS name there before
++        // DXCore/DXGI cache the adapter description.
+ 
+         //info!("Num dma queue entries = {}, luid = ({}, {})", start_info.RequiredDmaQueueEntry, start_info.AdapterLuid.LowPart, start_info.AdapterLuid.HighPart);
+ 
+@@ -1170,6 +1172,13 @@ impl Adapter {
+         };
+ 
+         let device_info = interface.get_device_info()?;
++        // Retry the Enum DeviceDesc here: by StartDevice the BIOS registry is
++        // certainly readable, while AddDevice may run before it is populated.
++        crate::identity::publish_enum_devicedesc(
++            self.device.as_ptr().cast::<wdk::dxgkrnl::_DEVICE_OBJECT>(),
++            crate::identity::IdentityStage::StartDevice,
++        );
++        crate::identity::publish(&device_info.DeviceRegistryPath);
+         let pci_common = interface.read_pci_common_header()?;
+         crate::bringup::record("StartStage", 3);
+         let luid = unsafe { transmute(start_info.AdapterLuid) };
+diff --git a/gpu-wddm/src/identity.rs b/gpu-wddm/src/identity.rs
+new file mode 100644
+index 0000000..b416853
+--- /dev/null
++++ b/gpu-wddm/src/identity.rs
+@@ -0,0 +1,335 @@
++//! Publish the host-provided GPU identity before DXCore/DXGI initialise.
++//!
++//! The host VMM passes the identity as SMBIOS strings through
++//! `crosvm --smbios manufacturer=DroidVM,product-name=<gpu>`.  EDK2 turns
++//! those into SMBIOS Type 1/2 tables, and Windows exposes them as
++//! `HKLM\HARDWARE\DESCRIPTION\System\BIOS\SystemManufacturer` and
++//! `SystemProductName`.  The KMD is the only component that runs before the
++//! adapter identity is cached, so it copies the value into the display
++//! adapter's software key (DXGK_DEVICE_INFO.DeviceRegistryPath).
++//!
++//! This is deliberately best-effort: a missing marker, a missing value, or a
++//! registry write failure leaves every existing value untouched.  No GPU name
++//! is compiled into the driver.
++
++use alloc::vec::Vec;
++use core::{
++    mem::{size_of, zeroed},
++    ptr::null_mut,
++};
++
++use wdk::wdm::*;
++use winresult::STATUS;
++
++/// PLUGPLAY_REGKEY_DEVICE from wdm.h; the value is ABI-fixed.
++const PLUGPLAY_REGKEY_DEVICE_FLAG: u32 = 1;
++
++// IoOpenDeviceRegistryKey is declared in wdm.h but is not guaranteed to be in
++// every generated binding subset.  The WDK export has this exact ABI.
++unsafe extern "system" {
++    #[link_name = "IoOpenDeviceRegistryKey"]
++    fn io_open_device_registry_key(
++        device_object: *mut DEVICE_OBJECT,
++        dev_inst_key_type: u32,
++        desired_access: u32,
++        device_reg_key: *mut HANDLE,
++    ) -> u32;
++}
++
++/// SMBIOS Type 1 / Type 2 strings that EDK2 uses when the VMM passes nothing.
++const DEFAULT_PRODUCT_NAMES: [&str; 2] = ["Gunyah Virtual Machine", "Gunyah vCPU"];
++/// The host VMM's explicit marker; it is not a GPU identity.
++const TRUST_MARKER: &str = "DroidVM";
++/// SMBIOS strings are short; refuse oversized data rather than truncating a
++/// value that DXCore would then show as a different name.
++const MAX_PRODUCT_CHARS: usize = 127;
++const BIOS_KEY_PATH: &str = "\\Registry\\Machine\\HARDWARE\\DESCRIPTION\\System\\BIOS";
++const QUERY_BUFFER_U32: usize = 128; // 512 bytes, enough for 127 UTF-16 chars + header
++
++fn ascii_eq(value: &[u16], expected: &str) -> bool {
++    value.len() == expected.len()
++        && value
++            .iter()
++            .zip(expected.bytes())
++            .all(|(&actual, expected)| actual == expected as u16)
++}
++
++fn ascii_eq_ignore_case(value: &[u16], expected: &str) -> bool {
++    fn lower(c: u16) -> u16 {
++        if (b'A' as u16..=b'Z' as u16).contains(&c) {
++            c + (b'a' - b'A') as u16
++        } else {
++            c
++        }
++    }
++    value.len() == expected.len()
++        && value
++            .iter()
++            .zip(expected.bytes())
++            .all(|(&actual, expected)| lower(actual) == lower(expected as u16))
++}
++
++fn is_default_product(value: &[u16]) -> bool {
++    DEFAULT_PRODUCT_NAMES
++        .iter()
++        .any(|default| ascii_eq_ignore_case(value, default))
++}
++
++/// Read a REG_SZ from the BIOS key.  Returns the string without its
++/// terminator, or None when the key/value is absent, empty, or malformed.
++fn read_bios_string(name: &str) -> Option<Vec<u16>> {
++    let mut path: Vec<u16> = BIOS_KEY_PATH.encode_utf16().collect();
++    let mut path_name = UNICODE_STRING {
++        Length: (path.len() * 2) as u16,
++        MaximumLength: (path.len() * 2) as u16,
++        Buffer: path.as_mut_ptr(),
++    };
++    let mut attrs: OBJECT_ATTRIBUTES = unsafe { zeroed() };
++    attrs.Length = size_of::<OBJECT_ATTRIBUTES>() as u32;
++    attrs.ObjectName = &mut path_name;
++    attrs.Attributes = OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE;
++
++    let mut key = null_mut();
++    let status = unsafe { ZwOpenKey(&mut key, KEY_QUERY_VALUE, &mut attrs) };
++    if (status as i32) < 0 {
++        return None;
++    }
++
++    let mut name_buf: Vec<u16> = name.encode_utf16().collect();
++    let mut value_name = UNICODE_STRING {
++        Length: (name_buf.len() * 2) as u16,
++        MaximumLength: (name_buf.len() * 2) as u16,
++        Buffer: name_buf.as_mut_ptr(),
++    };
++    let mut buf = [0u32; QUERY_BUFFER_U32];
++    let mut result_len = 0u32;
++    let status = unsafe {
++        ZwQueryValueKey(
++            key,
++            &mut value_name,
++            KEY_VALUE_INFORMATION_CLASS::KeyValuePartialInformation,
++            buf.as_mut_ptr().cast(),
++            size_of_val(&buf) as u32,
++            &mut result_len,
++        )
++    };
++    unsafe { ZwClose(key); }
++    if (status as i32) < 0 {
++        return None;
++    }
++
++    // KEY_VALUE_PARTIAL_INFORMATION: TitleIndex, Type, DataLength, Data[]
++    let value_type = buf[1];
++    let data_len = buf[2] as usize;
++    if value_type != REG_SZ || data_len < 2 || data_len % 2 != 0 {
++        return None;
++    }
++    if data_len + 12 > size_of_val(&buf) {
++        return None;
++    }
++    if data_len / 2 > MAX_PRODUCT_CHARS + 1 {
++        return None;
++    }
++
++    let data = unsafe { (buf.as_ptr() as *const u8).add(12) };
++    let mut out = Vec::with_capacity(data_len / 2);
++    let mut i = 0;
++    while i + 1 < data_len {
++        let c = unsafe { u16::from_le_bytes([*data.add(i), *data.add(i + 1)]) };
++        if c == 0 {
++            break;
++        }
++        out.push(c);
++        i += 2;
++    }
++    if out.is_empty() {
++        None
++    } else {
++        Some(out)
++    }
++}
++
++fn write_sz(key: HANDLE, name: &str, value: &[u16]) -> u32 {
++    let mut name_buf: Vec<u16> = name.encode_utf16().collect();
++    let mut value_name = UNICODE_STRING {
++        Length: (name_buf.len() * 2) as u16,
++        MaximumLength: (name_buf.len() * 2) as u16,
++        Buffer: name_buf.as_mut_ptr(),
++    };
++    unsafe {
++        ZwSetValueKey(
++            key,
++            &mut value_name,
++            0,
++            REG_SZ,
++            value.as_ptr() as *mut _,
++            (value.len() * 2) as u32,
++        )
++    }
++}
++
++/// Return the host-provided product name only when the VMM marker and a real,
++/// non-default SMBIOS value are both present.
++fn read_identity_product() -> Option<Vec<u16>> {
++    if unsafe { KeGetCurrentIrql() } != 0 {
++        return None;
++    }
++    let manufacturer = read_bios_string("SystemManufacturer")?;
++    if !ascii_eq_ignore_case(&manufacturer, TRUST_MARKER) {
++        return None;
++    }
++    let product = read_bios_string("SystemProductName")?;
++    if product.len() > MAX_PRODUCT_CHARS || is_default_product(&product) {
++        return None;
++    }
++    Some(product)
++}
++
++/// `registry_path` is DXGK_DEVICE_INFO.DeviceRegistryPath: the display
++/// adapter's software key.  Windows documents it as the only path a display
++/// miniport should write registry data to.
++pub fn publish(registry_path: &wdk::dxgkrnl::_UNICODE_STRING) {
++    if unsafe { KeGetCurrentIrql() } != 0
++        || registry_path.Length == 0
++        || registry_path.Buffer.is_null()
++    {
++        return;
++    }
++
++    let Some(product) = read_identity_product() else {
++        return;
++    };
++
++    let mut path_name = UNICODE_STRING {
++        Length: registry_path.Length,
++        MaximumLength: registry_path.MaximumLength,
++        Buffer: registry_path.Buffer,
++    };
++    let mut attrs: OBJECT_ATTRIBUTES = unsafe { zeroed() };
++    attrs.Length = size_of::<OBJECT_ATTRIBUTES>() as u32;
++    attrs.ObjectName = &mut path_name;
++    attrs.Attributes = OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE;
++
++    let mut key = null_mut();
++    let status = unsafe { ZwOpenKey(&mut key, KEY_SET_VALUE, &mut attrs) };
++    if (status as i32) < 0 {
++        return;
++    }
++
++    // The value is written NUL-terminated, as REG_SZ requires.
++    let mut data = Vec::with_capacity(product.len() + 1);
++    data.extend_from_slice(&product);
++    data.push(0);
++
++    // DriverDesc is what DXCore/DXGI cache as DriverDescription; write it last
++    // so a partial failure cannot change the Windows-visible name.
++    let chip = write_sz(key, "HardwareInformation.ChipType", &data) == 0;
++    let adapter = write_sz(key, "HardwareInformation.AdapterString", &data) == 0;
++    let driver = write_sz(key, "DriverDesc", &data) == 0;
++    unsafe { ZwClose(key); }
++
++    if chip && adapter && driver {
++        crate::bringup::record("IdentityPublished", 1);
++    }
++}
++
++/// Which callback attempted the Enum write; used only for diagnostics.
++#[derive(Clone, Copy)]
++pub enum IdentityStage {
++    AddDevice,
++    StartDevice,
++}
++
++impl IdentityStage {
++    fn status_key(self) -> &'static str {
++        match self {
++            Self::AddDevice => "IdentityEnumDeviceDescAdd",
++            Self::StartDevice => "IdentityEnumDeviceDescStart",
++        }
++    }
++
++    fn label(self) -> &'static str {
++        match self {
++            Self::AddDevice => "AddDevice",
++            Self::StartDevice => "StartDevice",
++        }
++    }
++}
++
++/// Write the Enum device-instance `DeviceDesc`.
++///
++/// DXCore exposes `DriverDescription` from this value (verified by a reboot
++/// A/B: FriendlyName is ignored and class/video DriverDesc is too late).
++/// `IoOpenDeviceRegistryKey(..., PLUGPLAY_REGKEY_DEVICE, ...)` opens the
++/// hardware key, i.e. `HKLM\SYSTEM\CurrentControlSet\Enum\<bus>\<id>\<instance>`
++/// (also proven by the Windows sample that reads `DeviceDesc` through it), not
++/// the `Device Parameters` subkey.  v3 calls this from both AddDevice and
++/// StartDevice: AddDevice is earliest, StartDevice is a retry after the BIOS
++/// registry is certainly available.
++pub fn publish_enum_devicedesc(
++    pdo: *mut wdk::dxgkrnl::_DEVICE_OBJECT,
++    stage: IdentityStage,
++) {
++    if pdo.is_null() || unsafe { KeGetCurrentIrql() } != 0 {
++        let code = STATUS::INVALID_PARAMETER.to_u32();
++        crate::bringup::record(stage.status_key(), code);
++        error!(
++            "identity enum DeviceDesc: stage={} invalid context status=0x{:08X}",
++            stage.label(),
++            code
++        );
++        return;
++    }
++
++    let Some(product) = read_identity_product() else {
++        let code = STATUS::INVALID_PARAMETER.to_u32();
++        crate::bringup::record(stage.status_key(), code);
++        error!(
++            "identity enum DeviceDesc: stage={} identity unavailable/default status=0x{:08X}",
++            stage.label(),
++            code
++        );
++        return;
++    };
++
++    let mut key = null_mut();
++    let status = unsafe {
++        io_open_device_registry_key(
++            pdo.cast::<DEVICE_OBJECT>(),
++            PLUGPLAY_REGKEY_DEVICE_FLAG,
++            KEY_SET_VALUE,
++            &mut key,
++        )
++    };
++    if (status as i32) < 0 {
++        crate::bringup::record(stage.status_key(), status);
++        error!(
++            "identity enum DeviceDesc: stage={} IoOpenDeviceRegistryKey status=0x{:08X}",
++            stage.label(),
++            status
++        );
++        return;
++    }
++
++    let mut data = Vec::with_capacity(product.len() + 1);
++    data.extend_from_slice(&product);
++    data.push(0);
++
++    let written = write_sz(key, "DeviceDesc", &data);
++    unsafe { ZwClose(key); }
++    if (written as i32) < 0 {
++        crate::bringup::record(stage.status_key(), written);
++        error!(
++            "identity enum DeviceDesc: stage={} ZwSetValueKey status=0x{:08X}",
++            stage.label(),
++            written
++        );
++    } else {
++        crate::bringup::record(stage.status_key(), 1);
++        info!(
++            "identity enum DeviceDesc: stage={} wrote product len={}",
++            stage.label(),
++            product.len()
++        );
++    }
++}
+diff --git a/gpu-wddm/src/lib.rs b/gpu-wddm/src/lib.rs
+index 6c0ef60..17dbae0 100644
+--- a/gpu-wddm/src/lib.rs
++++ b/gpu-wddm/src/lib.rs
+@@ -63,6 +63,7 @@ mod process;
+ mod bringup;
+ mod boot_pool;
+ mod guest_backing;
++mod identity;
+ 
+ // TODO: update tag to invalid for all tagged structs on drop
+ pub const VIRTIO_GPU_INVALID_TAG: u64 = 0xDEAD_DEAD_DEAD_DEAD;
+@@ -304,6 +305,15 @@ unsafe extern "C" fn add_device(device: *mut DEVICE_OBJECT, adapter: *mut HANDLE
+         Err(code) => return code.to_u32(),
+     };
+ 
++    // DXCore/Task Manager read the Enum instance DeviceDesc, so publish it in
++    // AddDevice: the earliest callback that has a PDO and still runs before the
++    // adapter is started.  The class/video DriverDesc path is written later, in
++    // Adapter::start.
++    crate::identity::publish_enum_devicedesc(
++        device,
++        crate::identity::IdentityStage::AddDevice,
++    );
++
+     unsafe { *adapter = TaggedExt::into_handle(gpu); }
+ 
+     STATUS::SUCCESS.to_u32()

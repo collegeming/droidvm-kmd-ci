@@ -177,6 +177,7 @@ $buildInfo = @(
     "patch=$patchKind",
     "patch_identity_sha256=$($versions['IDENTITY_PATCH_SHA256'])",
     "patch_identity_v2_sha256=$($versions['IDENTITY_V2_PATCH_SHA256'])",
+    "patch_identity_v3_sha256=$($versions['IDENTITY_V3_PATCH_SHA256'])",
     "patch_cursor_hide_sha256=$($versions['CURSOR_HIDE_PATCH_SHA256'])",
     "patch_cursor_color_sha256=$($versions['CURSOR_COLOR_PATCH_SHA256'])",
     "patch_cursor_software_sha256=$($versions['CURSOR_SOFTWARE_PATCH_SHA256'])",

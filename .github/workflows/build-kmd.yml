@@ -27,6 +27,7 @@ on:
           - none
           - identity
           - identity-v2
+          - identity-v3
           - cursor-hide
           - cursor-color
           - cursor-software
@@ -52,7 +53,7 @@ jobs:
     timeout-minutes: 60
     env:
       PATCH: ${{ github.event.inputs.patch || 'none' }}
-      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'cursor-color' && 'cursor-color') || (github.event.inputs.patch == 'cursor-software' && 'cursor-software') || (github.event.inputs.patch == 'all' && 'all') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
+      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'identity-v3' && 'identity-v3') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'cursor-color' && 'cursor-color') || (github.event.inputs.patch == 'cursor-software' && 'cursor-software') || (github.event.inputs.patch == 'all' && 'all') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -138,7 +139,7 @@ jobs:
     timeout-minutes: 30
     env:
       PATCH: ${{ github.event.inputs.patch || 'none' }}
-      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'cursor-color' && 'cursor-color') || (github.event.inputs.patch == 'cursor-software' && 'cursor-software') || (github.event.inputs.patch == 'all' && 'all') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
+      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'identity-v3' && 'identity-v3') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'cursor-color' && 'cursor-color') || (github.event.inputs.patch == 'cursor-software' && 'cursor-software') || (github.event.inputs.patch == 'all' && 'all') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
     steps:
       - uses: actions/checkout@v4
 
