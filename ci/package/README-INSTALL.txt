@@ -55,4 +55,7 @@ Notes:
 - The identity variant writes HardwareInformation.ChipType/AdapterString and
   DriverDesc only when SystemManufacturer == "DroidVM" and SystemProductName is
   a real host-provided name. The stock variant does not write those values.
+- The gdi/both variants issue RESOURCE_DETACH_BACKING before re-attaching
+  backing on UPDATE_PAGE_TABLE, so rutabaga drops the stale iovec before the
+  coalesced page list is installed.
 - Verify integrity with: Get-FileHash <file> -Algorithm SHA256

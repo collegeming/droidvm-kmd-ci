@@ -1,0 +1,47 @@
+diff --git a/gpu-wddm/src/lib.rs b/gpu-wddm/src/lib.rs
+index 6c0ef60..abe1d66 100644
+--- a/gpu-wddm/src/lib.rs
++++ b/gpu-wddm/src/lib.rs
+@@ -1213,21 +1213,39 @@ unsafe extern "C" fn build_paging_buffer(adapter: HANDLE, build_paging_buffer: *
+                 //warn!("{}: update for (alloc byte offset {} / total size {}): resource id {:?}", function!(), update.AllocationOffsetInBytes, alloc.size(), alloc.id());
+ 
+                 if alloc.attach_pages(update.AllocationOffsetInBytes as u64, entries) {
+-                    let needed = Command::attach_backing_virtual_dma_len(&alloc);
++                    // A full UPDATE_PAGE_TABLE can arrive after MAP_APERTURE_SEGMENT
++                    // already attached the MDL.  The host stores res->iov and
++                    // rutabaga replaces backing_iovecs on a successful attach, so
++                    // a second attach without detach leaves res->iov pointing at
++                    // the Vec rutabaga drops (SIGSEGV in vrend_read_from_iovec).
++                    // Detach first so the host clears the old pointer before
++                    // installing this coalesced, complete page-table list.
++                    let detach_len = Command::detach_backing_dma_len();
++                    let attach_len = Command::attach_backing_virtual_dma_len(&alloc);
++                    let needed = detach_len + attach_len;
+                     if needed >= dmabuf.len() {
+                         debug!("{}: attaching backing needs {} bytes, but only {} bytes are available", function!(), needed, dmabuf.len());
+                         return STATUS::GRAPHICS_INSUFFICIENT_DMA_BUFFER.to_u32();
+                     }
+ 
++                    let Some(res_id) = alloc.id() else {
++                        error!("{}: cannot attach backing from resource without id: {:?}", function!(), alloc);
++                        return STATUS::INVALID_PARAMETER.to_u32();
++                    };
++
+                     build_paging_buffer.pDmaBuffer = unsafe { build_paging_buffer.pDmaBuffer.byte_add(needed) };
+-                    let Some(cmd) = Command::attach_backing_virtual(&gpu.queue_channel().unwrap(), &alloc, dmabuf) else {
++                    let chan = gpu.queue_channel().unwrap();
++                    let (detach_dma, attach_dma) = dmabuf.split_at_mut(detach_len);
++                    let Some(attach) = Command::attach_backing_virtual(&chan, &alloc, attach_dma) else {
+                         error!("{}: failed to attach backing for {:?}", function!(), alloc);
+                         return STATUS::INVALID_PARAMETER.to_u32();
+                     };
++                    let detach = Command::detach_backing(&chan, res_id, detach_dma);
+ 
+                     //warn!("{} ({:?}): writing {:?} to {:?} (alloc {:?})", function!(), build_paging_buffer.Operation, cmd, build_paging_buffer.pDmaBufferPrivateData, alloc);
+ 
+-                    dma_priv.commands.push(cmd);
++                    dma_priv.commands.push(detach);
++                    dma_priv.commands.push(attach);
+                     //warn!("{} ({:?}): saved command {:?} for resource {:?}", function!(), build_paging_buffer.Operation, dma_priv.commands.last(), alloc.id());
+ 
+                 } else {

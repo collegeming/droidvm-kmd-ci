@@ -35,25 +35,35 @@ cat .cargo/config.toml
 PATCH_KIND=${PATCH:-none}
 VARIANT=${KMD_VARIANT:-stock}
 PATCH_LOG=$OUT/patch.log
-if [ "$PATCH_KIND" = "identity" ]; then
-  PATCH_FILE=$ROOT/patches/gpu-identity.patch
-  ACTUAL_SHA=$(sha256sum "$PATCH_FILE" | awk '{print $1}')
-  if [ "$ACTUAL_SHA" != "$IDENTITY_PATCH_SHA256" ]; then
-    echo "ERROR: $PATCH_FILE sha256 $ACTUAL_SHA does not match pinned $IDENTITY_PATCH_SHA256"
-    exit 1
-  fi
-  echo "== applying identity patch =="
-  {
-    echo "variant=$VARIANT patch=identity"
-    sha256sum "$PATCH_FILE"
+case "$PATCH_KIND" in
+  none)     PATCH_FILES=() ;;
+  identity) PATCH_FILES=(gpu-identity.patch) ;;
+  gdi)      PATCH_FILES=(kmd-attach-detach.patch) ;;
+  both)     PATCH_FILES=(gpu-identity.patch kmd-attach-detach.patch) ;;
+  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|gdi|both)"; exit 2 ;;
+esac
+{
+  echo "variant=$VARIANT patch=$PATCH_KIND"
+  for pf in "${PATCH_FILES[@]}"; do
+    case "$pf" in
+      gpu-identity.patch)     EXPECTED=$IDENTITY_PATCH_SHA256 ;;
+      kmd-attach-detach.patch) EXPECTED=$GDI_PATCH_SHA256 ;;
+      *) echo "ERROR: no pinned sha for $pf"; exit 1 ;;
+    esac
+    PATCH_FILE=$ROOT/patches/$pf
+    ACTUAL_SHA=$(sha256sum "$PATCH_FILE" | awk '{print $1}')
+    if [ "$ACTUAL_SHA" != "$EXPECTED" ]; then
+      echo "ERROR: $PATCH_FILE sha256 $ACTUAL_SHA does not match pinned $EXPECTED"
+      exit 1
+    fi
+    echo "patch_file=$pf sha256=$ACTUAL_SHA"
     git apply --check "$PATCH_FILE"
     git apply "$PATCH_FILE"
-    git diff --stat
-    git status --porcelain
-  } 2>&1 | tee "$PATCH_LOG"
-else
-  echo "variant=$VARIANT patch=none" | tee "$PATCH_LOG"
-fi
+    echo "applied $pf"
+  done
+  git diff --stat
+  git status --porcelain
+} 2>&1 | tee "$PATCH_LOG"
 
 echo "== cbindgen: virtio_wddm_uapi.h =="
 cbindgen --config gpu-wddm/cbindgen.toml gpu-wddm/src/uapi.rs > "$OUT/include/virtio_wddm_uapi.h"
@@ -80,7 +90,8 @@ fi
   echo "profile=debug"
   echo "variant=$VARIANT"
   echo "patch=$PATCH_KIND"
-  echo "patch_sha256=$IDENTITY_PATCH_SHA256"
+  echo "patch_identity_sha256=$IDENTITY_PATCH_SHA256"
+  echo "patch_gdi_sha256=$GDI_PATCH_SHA256"
   echo "rustc=$(rustc -V | tr '\n' ' ')"
   echo "cbindgen=$(cbindgen --version)"
   echo "kmd_upstream_commit=$KMD_UPSTREAM_COMMIT"

@@ -22,12 +22,6 @@ $run = if ($env:GITHUB_RUN_NUMBER) { $env:GITHUB_RUN_NUMBER } else { '0' }
 $version = if ($versions['INF_DRIVER_VER']) { $versions['INF_DRIVER_VER'] } else { '20.15.2.0' }
 $variant = if ($env:KMD_VARIANT) { $env:KMD_VARIANT } else { 'stock' }
 $patchKind = if ($env:PATCH) { $env:PATCH } else { 'none' }
-$patchFile = Join-Path $root 'patches/gpu-identity.patch'
-$patchSha = if ($versions['IDENTITY_PATCH_SHA256']) {
-    $versions['IDENTITY_PATCH_SHA256']
-} elseif (Test-Path $patchFile) {
-    (Get-FileHash $patchFile -Algorithm SHA256).Hash.ToLowerInvariant()
-} else { '' }
 
 # ---- collect build artifacts
 $artifactPath = Join-Path $root $ArtifactRoot
@@ -181,7 +175,8 @@ $buildInfo = @(
     "ref=$($env:GITHUB_REF)",
     "variant=$variant",
     "patch=$patchKind",
-    "patch_sha256=$patchSha",
+    "patch_identity_sha256=$($versions['IDENTITY_PATCH_SHA256'])",
+    "patch_gdi_sha256=$($versions['GDI_PATCH_SHA256'])",
     "built_utc=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))",
     "kmd_upstream_commit=$($versions['KMD_UPSTREAM_COMMIT'])",
     "rustc=$rustcLine",

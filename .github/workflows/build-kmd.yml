@@ -26,6 +26,8 @@ on:
         options:
           - none
           - identity
+          - gdi
+          - both
 
 permissions:
   contents: read
@@ -45,7 +47,7 @@ jobs:
     timeout-minutes: 60
     env:
       PATCH: ${{ github.event.inputs.patch || 'none' }}
-      KMD_VARIANT: ${{ github.event.inputs.patch == 'identity' && 'identity' || 'stock' }}
+      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -117,7 +119,7 @@ jobs:
     timeout-minutes: 30
     env:
       PATCH: ${{ github.event.inputs.patch || 'none' }}
-      KMD_VARIANT: ${{ github.event.inputs.patch == 'identity' && 'identity' || 'stock' }}
+      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
     steps:
       - uses: actions/checkout@v4
 
