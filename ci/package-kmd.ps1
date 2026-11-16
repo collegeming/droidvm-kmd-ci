@@ -188,6 +188,7 @@ $buildInfo = @(
     "profile=debug",
     "inf_driver_ver=$version",
     "inf_build_date=$buildDate",
+    "inf_hwid=PCI\VEN_1AF4&DEV_1050&SUBSYS_10501AF4&REV_01;PCI\VEN_1AF4&DEV_1050&SUBSYS_11001AF4&REV_01",
     "cert_subject=$subject",
     "cert_thumbprint_sha1=$thumbprint",
     "cert_sha256=$certSha256",
@@ -212,18 +213,21 @@ if ($buildLog) { Copy-Item $buildLog.FullName (Join-Path $drv 'build.log') }
 if ($buildEnv) { Copy-Item $buildEnv.FullName (Join-Path $drv 'BUILD-ENV.txt') }
 if ($uapi) { Copy-Item $uapi.FullName (Join-Path $drv 'virtio_wddm_uapi.h') }
 if ($patchLog) { Copy-Item $patchLog.FullName (Join-Path $drv 'patch.log') }
+Copy-Item (Join-Path $PSScriptRoot 'package/install-staged.ps1') $drv
+Copy-Item (Join-Path $PSScriptRoot 'package/README-INSTALL.txt') $drv
 Copy-Item (Join-Path $stage 'BUILD-INFO.txt') $drv
 Copy-Item (Join-Path $stage 'signature-verify.txt') $drv
 
 $packageFiles = @(
     'virtio_wddm_rs.sys', 'virtio_wddm_rs.cat', 'virtio_wddm_rs.inf',
     'droidvm-kmd-test.cer', 'BUILD-INFO.txt', 'BUILD-ENV.txt',
-    'signature-verify.txt', 'virtio_wddm_uapi.h', 'patch.log', 'build.log'
+    'signature-verify.txt', 'virtio_wddm_uapi.h', 'patch.log', 'build.log',
+    'install-staged.ps1', 'README-INSTALL.txt'
 ) | Where-Object { Test-Path (Join-Path $drv $_) }
 $sums = foreach ($f in $packageFiles) {
     '{0}  {1}' -f (Get-FileHash (Join-Path $drv $f) -Algorithm SHA256).Hash.ToLowerInvariant(), $f
 }
-$sums | Set-Content (Join-Path $drv 'SHA256SUMS.txt') -Encoding ascii
+[IO.File]::WriteAllText((Join-Path $drv 'SHA256SUMS.txt'), (($sums -join "`n") + "`n"), [Text.Encoding]::ASCII)
 $sums | ForEach-Object { Write-Host $_ }
 
 $zipPath = Join-Path $dist "droidvm-kmd-arm64-$variant-$run.zip"
@@ -234,7 +238,7 @@ if ($pdb) { Copy-Item $pdb.FullName $dist }
 $distSums = Get-ChildItem $dist -File | Where-Object Name -ne 'SHA256SUMS.txt' | ForEach-Object {
     '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
 }
-$distSums | Set-Content (Join-Path $dist 'SHA256SUMS.txt') -Encoding ascii
+[IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'), (($distSums -join "`n") + "`n"), [Text.Encoding]::ASCII)
 
 if ($env:GITHUB_STEP_SUMMARY) {
     @"

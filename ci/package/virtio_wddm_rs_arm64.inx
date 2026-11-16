@@ -24,8 +24,10 @@ virtio_wddm_rs.sys = 1,,
 %ManufacturerName%=Standard,NTarm64.10.0...16299
 
 [Standard.NTarm64.10.0...16299]
+; SUBSYS_10501AF4 is the DroidVM/crosvm device instance; SUBSYS_11001AF4 is
+; the upstream QEMU-compatible instance. Both bind to the same KMD.
+%VirtioGpu.DeviceDesc% = VirtioGpu_Inst, PCI\VEN_1AF4&DEV_1050&SUBSYS_10501AF4&REV_01
 %VirtioGpu.DeviceDesc% = VirtioGpu_Inst, PCI\VEN_1AF4&DEV_1050&SUBSYS_11001AF4&REV_01
-;%VirtioGpu.DeviceDesc% = VirtioGpu_Inst, PCI\VEN_1AF4&DEV_6969&SUBSYS_11001AF4&REV_01
 
 [VirtioGpu_Files.Driver]
 virtio_wddm_rs.sys,,,2
