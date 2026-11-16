@@ -32,6 +32,29 @@ cat "$ROOT/ewdk.env"
 echo "== committed cargo config (linker args for $TARGET) =="
 cat .cargo/config.toml
 
+PATCH_KIND=${PATCH:-none}
+VARIANT=${KMD_VARIANT:-stock}
+PATCH_LOG=$OUT/patch.log
+if [ "$PATCH_KIND" = "identity" ]; then
+  PATCH_FILE=$ROOT/patches/gpu-identity.patch
+  ACTUAL_SHA=$(sha256sum "$PATCH_FILE" | awk '{print $1}')
+  if [ "$ACTUAL_SHA" != "$IDENTITY_PATCH_SHA256" ]; then
+    echo "ERROR: $PATCH_FILE sha256 $ACTUAL_SHA does not match pinned $IDENTITY_PATCH_SHA256"
+    exit 1
+  fi
+  echo "== applying identity patch =="
+  {
+    echo "variant=$VARIANT patch=identity"
+    sha256sum "$PATCH_FILE"
+    git apply --check "$PATCH_FILE"
+    git apply "$PATCH_FILE"
+    git diff --stat
+    git status --porcelain
+  } 2>&1 | tee "$PATCH_LOG"
+else
+  echo "variant=$VARIANT patch=none" | tee "$PATCH_LOG"
+fi
+
 echo "== cbindgen: virtio_wddm_uapi.h =="
 cbindgen --config gpu-wddm/cbindgen.toml gpu-wddm/src/uapi.rs > "$OUT/include/virtio_wddm_uapi.h"
 
@@ -55,6 +78,9 @@ fi
   echo "repo_commit=$(git rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "target=$TARGET"
   echo "profile=debug"
+  echo "variant=$VARIANT"
+  echo "patch=$PATCH_KIND"
+  echo "patch_sha256=$IDENTITY_PATCH_SHA256"
   echo "rustc=$(rustc -V | tr '\n' ' ')"
   echo "cbindgen=$(cbindgen --version)"
   echo "kmd_upstream_commit=$KMD_UPSTREAM_COMMIT"
@@ -65,6 +91,6 @@ fi
 } > "$OUT/BUILD-ENV.txt"
 cat "$OUT/BUILD-ENV.txt"
 
-( cd "$OUT" && sha256sum virtio_wddm_rs.sys include/virtio_wddm_uapi.h BUILD-ENV.txt > SHA256SUMS.build.txt; cat SHA256SUMS.build.txt )
+( cd "$OUT" && sha256sum virtio_wddm_rs.sys include/virtio_wddm_uapi.h BUILD-ENV.txt patch.log > SHA256SUMS.build.txt; cat SHA256SUMS.build.txt )
 
 echo "== build finished: $(date -u +%Y-%m-%dT%H:%M:%SZ) =="

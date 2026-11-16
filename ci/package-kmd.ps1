@@ -19,6 +19,10 @@ $subject = $versions['CERT_SUBJECT']
 if (-not $subject) { throw 'CERT_SUBJECT is missing from versions.env' }
 $run = if ($env:GITHUB_RUN_NUMBER) { $env:GITHUB_RUN_NUMBER } else { '0' }
 $version = "20.15.1.$run"
+$variant = if ($env:KMD_VARIANT) { $env:KMD_VARIANT } else { 'stock' }
+$patchKind = if ($env:PATCH) { $env:PATCH } else { 'none' }
+$patchFile = Join-Path $root 'patches/gpu-identity.patch'
+$patchSha = if (Test-Path $patchFile) { (Get-FileHash $patchFile -Algorithm SHA256).Hash.ToLowerInvariant() } else { '' }
 
 # ---- collect build artifacts
 $artifactPath = Join-Path $root $ArtifactRoot
@@ -27,6 +31,7 @@ if (-not $sysSrc) { throw "virtio_wddm_rs.sys not found under $artifactPath" }
 $buildLog = Get-ChildItem -Path $artifactPath -Recurse -File -Filter 'build.log' | Select-Object -First 1
 $buildEnv = Get-ChildItem -Path $artifactPath -Recurse -File -Filter 'BUILD-ENV.txt' | Select-Object -First 1
 $uapi = Get-ChildItem -Path $artifactPath -Recurse -File -Filter 'virtio_wddm_uapi.h' | Select-Object -First 1
+$patchLog = Get-ChildItem -Path $artifactPath -Recurse -File -Filter 'patch.log' | Select-Object -First 1
 $pdb = Get-ChildItem -Path $artifactPath -Recurse -File -Filter 'virtio_gpu_wddm_rs.pdb' | Select-Object -First 1
 
 # ---- stage
@@ -169,6 +174,9 @@ $buildInfo = @(
     "run_id=$($env:GITHUB_RUN_ID)",
     "run_number=$run",
     "ref=$($env:GITHUB_REF)",
+    "variant=$variant",
+    "patch=$patchKind",
+    "patch_sha256=$patchSha",
     "built_utc=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))",
     "kmd_upstream_commit=$($versions['KMD_UPSTREAM_COMMIT'])",
     "rustc=$rustcLine",
@@ -199,13 +207,14 @@ Copy-Item $cer $drv
 if ($buildLog) { Copy-Item $buildLog.FullName (Join-Path $drv 'build.log') }
 if ($buildEnv) { Copy-Item $buildEnv.FullName (Join-Path $drv 'BUILD-ENV.txt') }
 if ($uapi) { Copy-Item $uapi.FullName (Join-Path $drv 'virtio_wddm_uapi.h') }
+if ($patchLog) { Copy-Item $patchLog.FullName (Join-Path $drv 'patch.log') }
 Copy-Item (Join-Path $stage 'BUILD-INFO.txt') $drv
 Copy-Item (Join-Path $stage 'signature-verify.txt') $drv
 
 $packageFiles = @(
     'virtio_wddm_rs.sys', 'virtio_wddm_rs.cat', 'virtio_wddm_rs.inf',
     'droidvm-kmd-test.cer', 'BUILD-INFO.txt', 'BUILD-ENV.txt',
-    'signature-verify.txt', 'virtio_wddm_uapi.h', 'build.log'
+    'signature-verify.txt', 'virtio_wddm_uapi.h', 'patch.log', 'build.log'
 ) | Where-Object { Test-Path (Join-Path $drv $_) }
 $sums = foreach ($f in $packageFiles) {
     '{0}  {1}' -f (Get-FileHash (Join-Path $drv $f) -Algorithm SHA256).Hash.ToLowerInvariant(), $f
@@ -213,7 +222,7 @@ $sums = foreach ($f in $packageFiles) {
 $sums | Set-Content (Join-Path $drv 'SHA256SUMS.txt') -Encoding ascii
 $sums | ForEach-Object { Write-Host $_ }
 
-$zipPath = Join-Path $dist "droidvm-kmd-arm64-$run.zip"
+$zipPath = Join-Path $dist "droidvm-kmd-arm64-$variant-$run.zip"
 Compress-Archive -Path (Join-Path $drv '*') -DestinationPath $zipPath -CompressionLevel Optimal -Force
 
 foreach ($f in (Get-ChildItem $drv -File)) { Copy-Item $f.FullName $dist }

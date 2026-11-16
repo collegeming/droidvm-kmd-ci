@@ -14,15 +14,24 @@ on:
       - 'rust-toolchain.toml'
       - '.cargo/**'
       - 'ci/**'
+      - 'patches/**'
       - 'versions.env'
       - '.github/workflows/build-kmd.yml'
   workflow_dispatch:
+    inputs:
+      patch:
+        description: 'Source patch to apply'
+        type: choice
+        default: none
+        options:
+          - none
+          - identity
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-kmd-${{ github.ref }}
+  group: build-kmd-${{ github.ref }}-${{ github.event.inputs.patch || 'none' }}
   cancel-in-progress: true
 
 env:
@@ -34,6 +43,9 @@ jobs:
     name: build KMD (ARM64)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      PATCH: ${{ github.event.inputs.patch || 'none' }}
+      KMD_VARIANT: ${{ github.event.inputs.patch == 'identity' && 'identity' || 'stock' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -89,12 +101,12 @@ jobs:
       - name: WDK / SDK headers from NuGet
         run: ci/setup-winsdk.sh winsdk
 
-      - name: Build stock KMD
+      - name: Build stock or patched KMD
         run: ci/build-kmd.sh
 
       - uses: actions/upload-artifact@v4
         with:
-          name: kmd-arm64-build
+          name: kmd-arm64-build-${{ env.KMD_VARIANT }}
           path: out/
           if-no-files-found: error
 
@@ -103,12 +115,15 @@ jobs:
     needs: build-kmd
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      PATCH: ${{ github.event.inputs.patch || 'none' }}
+      KMD_VARIANT: ${{ github.event.inputs.patch == 'identity' && 'identity' || 'stock' }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
         with:
-          name: kmd-arm64-build
+          name: kmd-arm64-build-${{ env.KMD_VARIANT }}
           path: artifacts/kmd-arm64-build
 
       - name: Package, sign, verify
@@ -120,6 +135,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: droidvm-kmd-arm64
+          name: droidvm-kmd-arm64-${{ env.KMD_VARIANT }}
           path: dist/*
           if-no-files-found: error
