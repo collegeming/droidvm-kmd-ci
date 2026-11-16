@@ -19,7 +19,7 @@ $subject = $versions['CERT_SUBJECT']
 if (-not $subject) { throw 'CERT_SUBJECT is missing from versions.env' }
 $run = if ($env:GITHUB_RUN_NUMBER) { $env:GITHUB_RUN_NUMBER } else { '0' }
 # Must stay above the currently installed candidate (20.15.1.43 / oem11.inf).
-$version = if ($versions['INF_DRIVER_VER']) { $versions['INF_DRIVER_VER'] } else { '20.15.2.0' }
+$version = if ($versions['INF_DRIVER_VER']) { $versions['INF_DRIVER_VER'] } else { '20.15.2.1' }
 $variant = if ($env:KMD_VARIANT) { $env:KMD_VARIANT } else { 'stock' }
 $patchKind = if ($env:PATCH) { $env:PATCH } else { 'none' }
 
