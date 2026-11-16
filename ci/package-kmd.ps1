@@ -18,7 +18,8 @@ Get-Content (Join-Path $root 'versions.env') | ForEach-Object {
 $subject = $versions['CERT_SUBJECT']
 if (-not $subject) { throw 'CERT_SUBJECT is missing from versions.env' }
 $run = if ($env:GITHUB_RUN_NUMBER) { $env:GITHUB_RUN_NUMBER } else { '0' }
-$version = "20.15.1.$run"
+# Must stay above the currently installed candidate (20.15.1.43 / oem11.inf).
+$version = if ($versions['INF_DRIVER_VER']) { $versions['INF_DRIVER_VER'] } else { '20.15.2.0' }
 $variant = if ($env:KMD_VARIANT) { $env:KMD_VARIANT } else { 'stock' }
 $patchKind = if ($env:PATCH) { $env:PATCH } else { 'none' }
 $patchFile = Join-Path $root 'patches/gpu-identity.patch'
