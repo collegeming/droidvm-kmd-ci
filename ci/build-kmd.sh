@@ -44,9 +44,10 @@ case "$PATCH_KIND" in
   cursor-software) PATCH_FILES=(gpu-identity-v2.patch cursor-software.patch) ;;
   all)        PATCH_FILES=(gpu-identity-v2.patch cursor-hide-zero.patch kmd-attach-detach.patch) ;;
   final-a2)   PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch) ;;
+  gdi-surface) PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch gdi-surface.patch) ;;
   gdi)        PATCH_FILES=(kmd-attach-detach.patch) ;;
   both)       PATCH_FILES=(gpu-identity.patch kmd-attach-detach.patch) ;;
-  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|identity-v2|cursor-hide|cursor-color|cursor-software|all|final-a2|gdi|both)"; exit 2 ;;
+  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|identity-v2|cursor-hide|cursor-color|cursor-software|all|final-a2|gdi-surface|gdi|both)"; exit 2 ;;
 esac
 {
   echo "variant=$VARIANT patch=$PATCH_KIND"
@@ -58,6 +59,7 @@ esac
       cursor-color.patch) EXPECTED=$CURSOR_COLOR_PATCH_SHA256 ;;
       cursor-software.patch) EXPECTED=$CURSOR_SOFTWARE_PATCH_SHA256 ;;
       kmd-attach-detach.patch) EXPECTED=$GDI_PATCH_SHA256 ;;
+      gdi-surface.patch)      EXPECTED=$GDI_SURFACE_PATCH_SHA256 ;;
       *) echo "ERROR: no pinned sha for $pf"; exit 1 ;;
     esac
     PATCH_FILE=$ROOT/patches/$pf
@@ -106,6 +108,7 @@ fi
   echo "patch_cursor_color_sha256=$CURSOR_COLOR_PATCH_SHA256"
   echo "patch_cursor_software_sha256=$CURSOR_SOFTWARE_PATCH_SHA256"
   echo "patch_gdi_sha256=$GDI_PATCH_SHA256"
+  echo "patch_gdi_surface_sha256=$GDI_SURFACE_PATCH_SHA256"
   echo "rustc=$(rustc -V | tr '\n' ' ')"
   echo "cbindgen=$(cbindgen --version)"
   echo "kmd_upstream_commit=$KMD_UPSTREAM_COMMIT"

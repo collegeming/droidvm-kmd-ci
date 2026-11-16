@@ -1,0 +1,93 @@
+diff --git a/gpu-wddm/src/bringup.rs b/gpu-wddm/src/bringup.rs
+index 89ca6f2..6c24318 100644
+--- a/gpu-wddm/src/bringup.rs
++++ b/gpu-wddm/src/bringup.rs
+@@ -21,7 +21,7 @@ pub mod runtime {
+         PresentLocalIneligibleStride, PresentLocalIneligibleFormatUnsupported,
+         PresentLocalIneligibleScaled,
+         PresentLocalIneligibleBounds, PresentLocalIneligibleDstNotAttached,
+-        StdAllocSharedPrimary, StdAllocShadow, StdAllocStaging, StdAllocOther,
++        StdAllocSharedPrimary, StdAllocShadow, StdAllocStaging, StdAllocGdiSurface, StdAllocOther,
+         // P1: fast path actually taken / mapping failed (fell back) / copies run.
+         PresentLocalTaken, PresentLocalMapFail, LocalCopyDone, LocalCopySyncFallback,
+         LocalCopyWake, LocalCopyPublish,
+@@ -111,7 +111,8 @@ pub mod runtime {
+                 "RtPresentLocalIneligibleStride", "RtPresentLocalIneligibleFormatUnsupported",
+                 "RtPresentLocalIneligibleScaled",
+                 "RtPresentLocalIneligibleBounds", "RtPresentLocalIneligibleDstNotAttached",
+-                "RtStdAllocSharedPrimary", "RtStdAllocShadow", "RtStdAllocStaging", "RtStdAllocOther",
++                "RtStdAllocSharedPrimary", "RtStdAllocShadow", "RtStdAllocStaging",
++                "RtStdAllocGdiSurface", "RtStdAllocOther",
+                 "RtPresentLocalTaken", "RtPresentLocalMapFail", "RtLocalCopyDone", "RtLocalCopySyncFallback",
+                 "RtLocalCopyWake", "RtLocalCopyPublish",
+             ];
+diff --git a/gpu-wddm/src/lib.rs b/gpu-wddm/src/lib.rs
+index 5239017..0811ead 100644
+--- a/gpu-wddm/src/lib.rs
++++ b/gpu-wddm/src/lib.rs
+@@ -888,6 +888,7 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
+             D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_SHAREDPRIMARYSURFACE => Stat::StdAllocSharedPrimary,
+             D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_SHADOWSURFACE => Stat::StdAllocShadow,
+             D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_STAGINGSURFACE => Stat::StdAllocStaging,
++            D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_GDISURFACE => Stat::StdAllocGdiSurface,
+             _ => Stat::StdAllocOther,
+         });
+     }
+@@ -938,6 +939,57 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
+ 
+             (w, h, size, format.into(), flags.bits())
+         },
++        D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_GDISURFACE => {
++            // DWM's GDI redirection surfaces are standard allocations too.  The
++            // previous implementation rejected this type with NOT_SUPPORTED,
++            // which leaves the GDI client area black even when the 3D path works.
++            // Describe the surface with the same CPU-visible 3D staging layout
++            // used by SHADOW/STAGING; the host has no pitch field in Allocate3d,
++            // so the row pitch must stay tight (Width * 4) for the host texture
++            // and the guest mapping to agree.
++            let surface_data = unsafe { &mut *standard_allocation.__bindgen_anon_1.pCreateGdiSurfaceData };
++
++            let w = surface_data.Width;
++            let h = surface_data.Height;
++            let gdi_type: u32 = unsafe { transmute(surface_data.Type) };
++            let gdi_flags: u32 = unsafe { transmute(surface_data.Flags) };
++            let mut format = VirglFormat::from(surface_data.Format);
++            if format.0 == VIRGL_FORMAT_NONE {
++                warn!("{}: GDISURFACE format {:?} has no virgl mapping; using B8G8R8A8", function!(), surface_data.Format);
++                format = VirglFormat(VIRGL_FORMAT_B8G8R8A8_UNORM);
++            }
++
++            bringup::record("GdiSurfaceType", gdi_type);
++            bringup::record("GdiSurfaceFlags", gdi_flags);
++            bringup::record("GdiSurfaceWidth", w);
++            bringup::record("GdiSurfaceHeight", h);
++            bringup::record("GdiSurfaceFormat", format.0);
++
++            if w == 0 || h == 0 {
++                error!("{}: GDISURFACE invalid size {}x{} type={} flags=0x{:08x}", function!(), w, h, gdi_type, gdi_flags);
++                bringup::record("GdiSurfaceReturnStatus", STATUS::INVALID_PARAMETER.to_u32());
++                return STATUS::INVALID_PARAMETER.to_u32();
++            }
++
++            let pitch = w.saturating_mul(4);
++            let size = (pitch as u64) * (h as u64);
++            surface_data.Pitch = pitch;
++            let flags = VirglFlags::MAP_COHERENT;
++
++            {
++                use core::sync::atomic::AtomicU32;
++                static GDI_CALLS: AtomicU32 = AtomicU32::new(0);
++                bringup::count("GdiSurfaceCallCount", &GDI_CALLS);
++            }
++            bringup::record("GdiSurfacePitch", pitch);
++            bringup::record("GdiSurfaceSizeLo", size as u32);
++            error!(
++                "{}: GDISURFACE type={} format=0x{:08x} flags=0x{:08x} {}x{} pitch={} size={}",
++                function!(), gdi_type, format.0, gdi_flags, w, h, pitch, size
++            );
++
++            (w, h, size, format.into(), flags.bits())
++        },
+         _ => {
+             error!("{}: unsupported standard allocation type {:?}", function!(), standard_allocation.StandardAllocationType);
+             return STATUS::NOT_SUPPORTED.to_u32();
