@@ -22,7 +22,11 @@ $version = "20.15.1.$run"
 $variant = if ($env:KMD_VARIANT) { $env:KMD_VARIANT } else { 'stock' }
 $patchKind = if ($env:PATCH) { $env:PATCH } else { 'none' }
 $patchFile = Join-Path $root 'patches/gpu-identity.patch'
-$patchSha = if (Test-Path $patchFile) { (Get-FileHash $patchFile -Algorithm SHA256).Hash.ToLowerInvariant() } else { '' }
+$patchSha = if ($versions['IDENTITY_PATCH_SHA256']) {
+    $versions['IDENTITY_PATCH_SHA256']
+} elseif (Test-Path $patchFile) {
+    (Get-FileHash $patchFile -Algorithm SHA256).Hash.ToLowerInvariant()
+} else { '' }
 
 # ---- collect build artifacts
 $artifactPath = Join-Path $root $ArtifactRoot

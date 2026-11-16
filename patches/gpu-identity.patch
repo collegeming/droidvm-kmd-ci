@@ -185,7 +185,7 @@ index 0000000..74d5512
 +/// `registry_path` is DXGK_DEVICE_INFO.DeviceRegistryPath: the display
 +/// adapter's software key.  Windows documents it as the only path a display
 +/// miniport should write registry data to.
-+pub fn publish(registry_path: &UNICODE_STRING) {
++pub fn publish(registry_path: &wdk::dxgkrnl::_UNICODE_STRING) {
 +    if unsafe { KeGetCurrentIrql() } != 0
 +        || registry_path.Length == 0
 +        || registry_path.Buffer.is_null()
