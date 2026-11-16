@@ -1,0 +1,125 @@
+name: build-kmd
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gpu-wddm/**'
+      - 'wdk/**'
+      - 'util/**'
+      - 'virtio-drivers/**'
+      - 'proc/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'ci/**'
+      - 'versions.env'
+      - '.github/workflows/build-kmd.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-kmd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+
+jobs:
+  build-kmd:
+    name: build KMD (ARM64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load pinned versions
+        run: grep -vE '^[[:space:]]*(#|$)' versions.env >> "$GITHUB_ENV"
+
+      - name: Host packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q clang libclang-dev unzip
+          mkdir -p "$HOME/bin"
+          ln -sf "$(command -v clang)" "$HOME/bin/clang-cl"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Cache llvm-mingw and WDK NuGet
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/llvm-mingw
+            winsdk/.nuget
+          key: tc-${{ env.LLVM_MINGW }}-${{ env.NUGET_VER }}
+
+      - name: llvm-mingw
+        run: |
+          if [ ! -x ~/llvm-mingw/bin/clang ]; then
+            curl -sSLf --retry 5 -o lm.tar.xz \
+              "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW/llvm-mingw-$LLVM_MINGW-ucrt-ubuntu-22.04-x86_64.tar.xz"
+            mkdir -p ~/llvm-mingw
+            tar xf lm.tar.xz -C ~/llvm-mingw --strip-components=1
+            rm lm.tar.xz
+          fi
+          echo "$HOME/llvm-mingw/bin" >> "$GITHUB_PATH"
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'versions.env') }}-${{ github.run_id }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'versions.env') }}-
+            cargo-${{ runner.os }}-
+
+      - name: Rust nightly + cbindgen
+        run: |
+          rustup toolchain install "$NIGHTLY" --profile minimal -c rust-src
+          export RUSTUP_TOOLCHAIN="$NIGHTLY"
+          cargo install cbindgen --version "$CBINDGEN_VER" --locked
+          echo "RUSTUP_TOOLCHAIN=$NIGHTLY" >> "$GITHUB_ENV"
+
+      - name: WDK / SDK headers from NuGet
+        run: ci/setup-winsdk.sh winsdk
+
+      - name: Build stock KMD
+        run: ci/build-kmd.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kmd-arm64-build
+          path: out/
+          if-no-files-found: error
+
+  package-sign:
+    name: package + test-sign
+    needs: build-kmd
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: kmd-arm64-build
+          path: artifacts/kmd-arm64-build
+
+      - name: Package, sign, verify
+        shell: pwsh
+        env:
+          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+        run: ./ci/package-kmd.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: droidvm-kmd-arm64
+          path: dist/*
+          if-no-files-found: error

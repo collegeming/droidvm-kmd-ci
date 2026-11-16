@@ -1,0 +1,15 @@
+/target
+/PRIVATE
+*.env
+!/versions.env
+*.geany
+/ewdk.env
+/winsdk/
+/out/
+/stage/
+/dist/
+/wdk-nuget/
+*.pfx
+*.p12
+*.pem
+*.key
