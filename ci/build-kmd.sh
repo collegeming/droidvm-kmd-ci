@@ -35,6 +35,7 @@ cat .cargo/config.toml
 PATCH_KIND=${PATCH:-none}
 VARIANT=${KMD_VARIANT:-stock}
 PATCH_LOG=$OUT/patch.log
+FEATURES=""
 case "$PATCH_KIND" in
   none)       PATCH_FILES=() ;;
   identity)   PATCH_FILES=(gpu-identity.patch) ;;
@@ -45,9 +46,10 @@ case "$PATCH_KIND" in
   all)        PATCH_FILES=(gpu-identity-v2.patch cursor-hide-zero.patch kmd-attach-detach.patch) ;;
   final-a2)   PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch) ;;
   gdi-surface) PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch gdi-surface.patch) ;;
+  gdi-surface-diag) PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch gdi-surface.patch); FEATURES="--features bringup-diagnostics" ;;
   gdi)        PATCH_FILES=(kmd-attach-detach.patch) ;;
   both)       PATCH_FILES=(gpu-identity.patch kmd-attach-detach.patch) ;;
-  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|identity-v2|cursor-hide|cursor-color|cursor-software|all|final-a2|gdi-surface|gdi|both)"; exit 2 ;;
+  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|identity-v2|cursor-hide|cursor-color|cursor-software|all|final-a2|gdi-surface|gdi-surface-diag|gdi|both)"; exit 2 ;;
 esac
 {
   echo "variant=$VARIANT patch=$PATCH_KIND"
@@ -81,7 +83,7 @@ echo "== cbindgen: virtio_wddm_uapi.h =="
 cbindgen --config gpu-wddm/cbindgen.toml gpu-wddm/src/uapi.rs > "$OUT/include/virtio_wddm_uapi.h"
 
 echo "== cargo build =="
-cargo build --locked --package virtio-gpu-wddm-rs --target "$TARGET"
+cargo build --locked --package virtio-gpu-wddm-rs --target "$TARGET" $FEATURES
 
 SYS=$OUT/virtio_wddm_rs.sys
 cp "target/$TARGET/debug/virtio_gpu_wddm_rs.dll" "$SYS"
@@ -109,6 +111,7 @@ fi
   echo "patch_cursor_software_sha256=$CURSOR_SOFTWARE_PATCH_SHA256"
   echo "patch_gdi_sha256=$GDI_PATCH_SHA256"
   echo "patch_gdi_surface_sha256=$GDI_SURFACE_PATCH_SHA256"
+  echo "features=${FEATURES:-none}"
   echo "rustc=$(rustc -V | tr '\n' ' ')"
   echo "cbindgen=$(cbindgen --version)"
   echo "kmd_upstream_commit=$KMD_UPSTREAM_COMMIT"

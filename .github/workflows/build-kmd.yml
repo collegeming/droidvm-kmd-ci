@@ -33,6 +33,7 @@ on:
           - all
           - final-a2
           - gdi-surface
+          - gdi-surface-diag
           - gdi
           - both
 
@@ -54,7 +55,7 @@ jobs:
     timeout-minutes: 60
     env:
       PATCH: ${{ github.event.inputs.patch || 'none' }}
-      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'cursor-color' && 'cursor-color') || (github.event.inputs.patch == 'cursor-software' && 'cursor-software') || (github.event.inputs.patch == 'all' && 'all') || (github.event.inputs.patch == 'final-a2' && 'final-a2') || (github.event.inputs.patch == 'gdi-surface' && 'gdi-surface') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
+      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'cursor-color' && 'cursor-color') || (github.event.inputs.patch == 'cursor-software' && 'cursor-software') || (github.event.inputs.patch == 'all' && 'all') || (github.event.inputs.patch == 'final-a2' && 'final-a2') || (github.event.inputs.patch == 'gdi-surface' && 'gdi-surface') || (github.event.inputs.patch == 'gdi-surface-diag' && 'gdi-surface-diag') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -67,6 +68,7 @@ jobs:
             all) ver=20.15.2.6 ;;
             final-a2) ver=20.15.2.8 ;;
             gdi-surface) ver=20.15.2.9 ;;
+            gdi-surface-diag) ver=20.15.3.0 ;;
             *) ver="" ;;
           esac
           if [ -n "$ver" ]; then
@@ -142,7 +144,7 @@ jobs:
     timeout-minutes: 30
     env:
       PATCH: ${{ github.event.inputs.patch || 'none' }}
-      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'cursor-color' && 'cursor-color') || (github.event.inputs.patch == 'cursor-software' && 'cursor-software') || (github.event.inputs.patch == 'all' && 'all') || (github.event.inputs.patch == 'final-a2' && 'final-a2') || (github.event.inputs.patch == 'gdi-surface' && 'gdi-surface') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
+      KMD_VARIANT: ${{ (github.event.inputs.patch == 'identity' && 'identity') || (github.event.inputs.patch == 'identity-v2' && 'identity-v2') || (github.event.inputs.patch == 'cursor-hide' && 'cursor-hide') || (github.event.inputs.patch == 'cursor-color' && 'cursor-color') || (github.event.inputs.patch == 'cursor-software' && 'cursor-software') || (github.event.inputs.patch == 'all' && 'all') || (github.event.inputs.patch == 'final-a2' && 'final-a2') || (github.event.inputs.patch == 'gdi-surface' && 'gdi-surface') || (github.event.inputs.patch == 'gdi-surface-diag' && 'gdi-surface-diag') || (github.event.inputs.patch == 'gdi' && 'gdi') || (github.event.inputs.patch == 'both' && 'both') || 'stock' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -155,6 +157,7 @@ jobs:
             all) ver=20.15.2.6 ;;
             final-a2) ver=20.15.2.8 ;;
             gdi-surface) ver=20.15.2.9 ;;
+            gdi-surface-diag) ver=20.15.3.0 ;;
             *) ver="" ;;
           esac
           if [ -n "$ver" ]; then

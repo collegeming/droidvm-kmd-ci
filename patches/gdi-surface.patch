@@ -1,5 +1,5 @@
 diff --git a/gpu-wddm/src/bringup.rs b/gpu-wddm/src/bringup.rs
-index 89ca6f2..6c24318 100644
+index 89ca6f2..d2bc567 100644
 --- a/gpu-wddm/src/bringup.rs
 +++ b/gpu-wddm/src/bringup.rs
 @@ -21,7 +21,7 @@ pub mod runtime {
@@ -21,11 +21,71 @@ index 89ca6f2..6c24318 100644
                  "RtPresentLocalTaken", "RtPresentLocalMapFail", "RtLocalCopyDone", "RtLocalCopySyncFallback",
                  "RtLocalCopyWake", "RtLocalCopyPublish",
              ];
+@@ -252,3 +253,59 @@ pub fn record(name: &str, value: u32) {
+         ZwClose(handle);
+     }
+ }
++
++#[cfg(feature = "bringup-diagnostics")]
++fn write_record_at(path: &str, name: &str, value: u32) -> bool {
++    use core::{mem::zeroed, ptr::null_mut};
++    use wdk::wdm::*;
++    if unsafe { KeGetCurrentIrql() } != 0 { return false; }
++
++    let mut path_buf: alloc::vec::Vec<u16> = path.encode_utf16().collect();
++    let mut key_name = UNICODE_STRING {
++        Length: (path_buf.len() * 2) as u16,
++        MaximumLength: (path_buf.len() * 2) as u16,
++        Buffer: path_buf.as_mut_ptr(),
++    };
++    let mut attrs: OBJECT_ATTRIBUTES = unsafe { zeroed() };
++    attrs.Length = core::mem::size_of::<OBJECT_ATTRIBUTES>() as u32;
++    attrs.ObjectName = &mut key_name;
++    attrs.Attributes = OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE;
++    let mut handle = null_mut();
++    let status = unsafe { ZwOpenKey(&mut handle, KEY_SET_VALUE, &mut attrs) };
++    if (status as i32) < 0 { return false; }
++
++    let mut name_buf: alloc::vec::Vec<u16> = name.encode_utf16().collect();
++    let mut value_name = UNICODE_STRING {
++        Length: (name_buf.len() * 2) as u16,
++        MaximumLength: (name_buf.len() * 2) as u16,
++        Buffer: name_buf.as_mut_ptr(),
++    };
++    let status = unsafe {
++        ZwSetValueKey(handle, &mut value_name, 0, REG_DWORD,
++                      (&value as *const u32).cast_mut().cast(), core::mem::size_of::<u32>() as u32)
++    };
++    unsafe { ZwClose(handle); }
++    (status as i32) >= 0
++}
++
++/// Write a GDISURFACE diagnostic where the test harness can read it even if the
++/// dedicated `Parameters\Bringup` key was not created or denies KEY_SET_VALUE.
++/// Try the normal Bringup key first, then the service Parameters key, then the
++/// display class software key(s) that the identity writer proved writable.
++#[cfg(feature = "bringup-diagnostics")]
++pub fn record_gdi(name: &str, value: u32) {
++    const PATHS: [&str; 4] = [
++        "\\Registry\\Machine\\System\\CurrentControlSet\\Services\\VirtioGpu\\Parameters\\Bringup",
++        "\\Registry\\Machine\\System\\CurrentControlSet\\Services\\VirtioGpu\\Parameters",
++        "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0000",
++        "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0001",
++    ];
++    for path in PATHS {
++        if write_record_at(path, name, value) {
++            break;
++        }
++    }
++}
++
++#[cfg(not(feature = "bringup-diagnostics"))]
++pub fn record_gdi(_name: &str, _value: u32) {}
 diff --git a/gpu-wddm/src/lib.rs b/gpu-wddm/src/lib.rs
-index 5239017..0811ead 100644
+index 5239017..75205c5 100644
 --- a/gpu-wddm/src/lib.rs
 +++ b/gpu-wddm/src/lib.rs
-@@ -888,6 +888,7 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
+@@ -888,11 +888,13 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
              D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_SHAREDPRIMARYSURFACE => Stat::StdAllocSharedPrimary,
              D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_SHADOWSURFACE => Stat::StdAllocShadow,
              D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_STAGINGSURFACE => Stat::StdAllocStaging,
@@ -33,7 +93,13 @@ index 5239017..0811ead 100644
              _ => Stat::StdAllocOther,
          });
      }
-@@ -938,6 +939,57 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
+ 
+     let mut refresh_rate = D3DDDI_RATIONAL { Numerator: 0, Denominator: 0 };
++    let mut gdi_request = false;
+     let (width, height, size, format, flags) = match standard_allocation.StandardAllocationType {
+         D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_SHAREDPRIMARYSURFACE => {
+             let surface_data = unsafe { &*standard_allocation.__bindgen_anon_1.pCreateSharedPrimarySurfaceData };
+@@ -938,6 +940,59 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
  
              (w, h, size, format.into(), flags.bits())
          },
@@ -46,6 +112,7 @@ index 5239017..0811ead 100644
 +            // so the row pitch must stay tight (Width * 4) for the host texture
 +            // and the guest mapping to agree.
 +            let surface_data = unsafe { &mut *standard_allocation.__bindgen_anon_1.pCreateGdiSurfaceData };
++            gdi_request = true;
 +
 +            let w = surface_data.Width;
 +            let h = surface_data.Height;
@@ -57,15 +124,15 @@ index 5239017..0811ead 100644
 +                format = VirglFormat(VIRGL_FORMAT_B8G8R8A8_UNORM);
 +            }
 +
-+            bringup::record("GdiSurfaceType", gdi_type);
-+            bringup::record("GdiSurfaceFlags", gdi_flags);
-+            bringup::record("GdiSurfaceWidth", w);
-+            bringup::record("GdiSurfaceHeight", h);
-+            bringup::record("GdiSurfaceFormat", format.0);
++            bringup::record_gdi("GdiSurfaceType", gdi_type);
++            bringup::record_gdi("GdiSurfaceFlags", gdi_flags);
++            bringup::record_gdi("GdiSurfaceWidth", w);
++            bringup::record_gdi("GdiSurfaceHeight", h);
++            bringup::record_gdi("GdiSurfaceFormat", format.0);
 +
 +            if w == 0 || h == 0 {
 +                error!("{}: GDISURFACE invalid size {}x{} type={} flags=0x{:08x}", function!(), w, h, gdi_type, gdi_flags);
-+                bringup::record("GdiSurfaceReturnStatus", STATUS::INVALID_PARAMETER.to_u32());
++                bringup::record_gdi("GdiSurfaceReturnStatus", STATUS::INVALID_PARAMETER.to_u32());
 +                return STATUS::INVALID_PARAMETER.to_u32();
 +            }
 +
@@ -75,12 +142,13 @@ index 5239017..0811ead 100644
 +            let flags = VirglFlags::MAP_COHERENT;
 +
 +            {
-+                use core::sync::atomic::AtomicU32;
++                use core::sync::atomic::{AtomicU32, Ordering};
 +                static GDI_CALLS: AtomicU32 = AtomicU32::new(0);
-+                bringup::count("GdiSurfaceCallCount", &GDI_CALLS);
++                let call = GDI_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
++                bringup::record_gdi("GdiSurfaceCallCount", call);
 +            }
-+            bringup::record("GdiSurfacePitch", pitch);
-+            bringup::record("GdiSurfaceSizeLo", size as u32);
++            bringup::record_gdi("GdiSurfacePitch", pitch);
++            bringup::record_gdi("GdiSurfaceSizeLo", size as u32);
 +            error!(
 +                "{}: GDISURFACE type={} format=0x{:08x} flags=0x{:08x} {}x{} pitch={} size={}",
 +                function!(), gdi_type, format.0, gdi_flags, w, h, pitch, size
@@ -91,3 +159,13 @@ index 5239017..0811ead 100644
          _ => {
              error!("{}: unsupported standard allocation type {:?}", function!(), standard_allocation.StandardAllocationType);
              return STATUS::NOT_SUPPORTED.to_u32();
+@@ -970,6 +1025,9 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
+ 
+     debug!("{}: standard allocation -> {:?}", function!(), allocation::VirtioResource::from(unsafe { alloc_priv._3d }));
+ 
++    if gdi_request {
++        bringup::record_gdi("GdiSurfaceReturnStatus", STATUS::SUCCESS.to_u32());
++    }
+     STATUS::SUCCESS.to_u32()
+ }
+ 
