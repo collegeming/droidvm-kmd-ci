@@ -177,6 +177,7 @@ $buildInfo = @(
     "patch=$patchKind",
     "patch_identity_sha256=$($versions['IDENTITY_PATCH_SHA256'])",
     "patch_identity_v2_sha256=$($versions['IDENTITY_V2_PATCH_SHA256'])",
+    "patch_cursor_hide_sha256=$($versions['CURSOR_HIDE_PATCH_SHA256'])",
     "patch_gdi_sha256=$($versions['GDI_PATCH_SHA256'])",
     "built_utc=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))",
     "kmd_upstream_commit=$($versions['KMD_UPSTREAM_COMMIT'])",

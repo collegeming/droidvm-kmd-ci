@@ -1,0 +1,53 @@
+diff --git a/gpu-wddm/src/queue.rs b/gpu-wddm/src/queue.rs
+index 07c1cfc..1528e17 100644
+--- a/gpu-wddm/src/queue.rs
++++ b/gpu-wddm/src/queue.rs
+@@ -2722,6 +2722,29 @@ impl GpuChannel {
+         Ok(())
+     }
+ 
++    /// Hides the cursor with virtio-gpu's authoritative disable form: UPDATE_CURSOR with
++    /// resource_id 0. The guest-side Cursor object stays allocated; only the device's
++    /// cursor scanout is taken down.
++    pub fn disable_cursor(&self, scanout_id: u32, hot_x: u32, hot_y: u32, x: u32, y: u32) -> Result<(), NtStatus> {
++        let cmd = commands::UpdateCursor {
++            header: self.new_header(commands::Command::UPDATE_CURSOR, false, None, None),
++            pos: commands::CursorPos {
++                scanout_id,
++                x,
++                y,
++                _padding: 0,
++            },
++            resource_id: 0,
++            hot_x,
++            hot_y,
++            _padding: 0,
++        };
++
++        self.cursor.request_async::<_, commands::CtrlHeader>(cmd, Callback::None)?;
++
++        Ok(())
++    }
++
+     pub fn update_cursor(&self, scanout_id: u32, resource_id: NonZero<u32>, hot_x: u32, hot_y: u32, x: u32, y: u32) -> Result<(), NtStatus> {
+         let cmd = commands::UpdateCursor {
+             header: self.new_header(commands::Command::UPDATE_CURSOR, false, None, None),
+diff --git a/gpu-wddm/src/vidpn.rs b/gpu-wddm/src/vidpn.rs
+index 1f323ec..243c3f4 100644
+--- a/gpu-wddm/src/vidpn.rs
++++ b/gpu-wddm/src/vidpn.rs
+@@ -1488,8 +1488,12 @@ impl VidPnOutput {
+             (empty.position, empty.hotspot)
+         };
+ 
+-        let res_id = empty.pixels.id;
+-        chan.update_cursor(scanout, res_id, x_hot, y_hot, x, y)
++        // virtio-gpu's own way to hide the cursor: UPDATE_CURSOR with resource_id 0.
++        // crosvm turns that into set_cursor_visible(false), which the Android backend
++        // forwards to the app as a u32::MAX position so it parks the cursor overlay.
++        // Sending the all-zero empty_cursor resource instead kept the plane visible
++        // (a 64x64 black square at the last pointer position).
++        chan.disable_cursor(scanout, x_hot, y_hot, x, y)
+     }
+ 
+     pub fn move_cursor(&self, scanout: u32, chan: &GpuChannel, x: i32, y: i32) -> Result<(), NtStatus> {
