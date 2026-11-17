@@ -1,0 +1,401 @@
+diff --git a/gpu-wddm/src/adapter.rs b/gpu-wddm/src/adapter.rs
+index 869e594..b3cb522 100644
+--- a/gpu-wddm/src/adapter.rs
++++ b/gpu-wddm/src/adapter.rs
+@@ -2757,6 +2757,17 @@ impl Adapter {
+                 return Err(NtStatus(STATUS::INVALID_PARAMETER));
+             }
+             allocation.set_primary_refresh_rate(data.refresh_rate);
++            if data.kind == crate::allocation::STANDARD_ALLOCATION_KIND_GDISURFACE {
++                // GDI redirection surface: record it so the submit paths can
++                // push the CPU-written pixels to the host before the GPU
++                // samples them.
++                use core::sync::atomic::{AtomicU32, Ordering};
++                static GDI_ALLOCS: AtomicU32 = AtomicU32::new(0);
++                allocation.mark_gdi_surface();
++                crate::bringup::record("AllocGdiSurfaceCount", GDI_ALLOCS.fetch_add(1, Ordering::Relaxed) + 1);
++                crate::bringup::record("AllocGdiSurfaceResId", allocation.id().map(|id| id.get()).unwrap_or(0));
++                crate::bringup::record("AllocGdiSurfaceSizeLo", allocation.size() as u32);
++            }
+         }
+ 
+         if let Some((rate, source)) = primary_metadata {
+diff --git a/gpu-wddm/src/allocation.rs b/gpu-wddm/src/allocation.rs
+index 91d788b..d19314d 100644
+--- a/gpu-wddm/src/allocation.rs
++++ b/gpu-wddm/src/allocation.rs
+@@ -78,10 +78,20 @@ pub struct StandardAllocationData {
+     pub allocation: crate::uapi::CreateAllocation,
+     pub tag: u64,
+     pub refresh_rate: wdk::dxgkrnl::D3DDDI_RATIONAL,
++    /// 0 for the legacy SHAREDPRIMARY/SHADOW/STAGING descriptions, or one of
++    /// the `STANDARD_ALLOCATION_KIND_*` values.  GetStandardAllocationDriverData
++    /// fills this in; CreateAllocation is the only other reader.
++    pub kind: u32,
+ }
+ 
+ pub const STANDARD_ALLOCATION_TAG: u64 = u64::from_le_bytes(*b"VGPURATE");
+ 
++/// Set in `StandardAllocationData.standard` for allocations that came from
++/// `D3DKMDT_STANDARDALLOCATION_GDISURFACE`.  The host never samples these as
++/// ordinary 3D textures: win32k/DWM writes them through the CPU, so the KMD
++/// has to push the guest bytes up with a TRANSFER3D before the GPU reads them.
++pub const STANDARD_ALLOCATION_KIND_GDISURFACE: u32 = 2;
++
+ /*
+ trait AtomicRW: Clone + Default {
+     type Item;
+@@ -605,6 +615,10 @@ impl fmt::Debug for DeviceSpecificAllocation {
+ 
+ const ALLOCATION_FLAG_CREATED: u32 = 1u32 << 0;
+ const ALLOCATION_FLAG_MAPPED:  u32 = 1u32 << 1;
++/// The allocation came from `D3DKMDT_STANDARDALLOCATION_GDISURFACE`.  Its
++/// pixels reach the host through the CPU, never through a UMD draw, so every
++/// submit that references it must first push the guest pages up.
++const ALLOCATION_FLAG_GDISURFACE: u32 = 1u32 << 2;
+ 
+ #[repr(C)]
+ #[derive(Tagged, Debug)]
+@@ -776,6 +790,24 @@ impl Allocation {
+         matches!(self.resource, VirtioResource::_3D { .. })
+     }
+ 
++    /// True for allocations that win32k/DWM fill from the CPU (GDI
++    /// redirection surfaces).  See `ALLOCATION_FLAG_GDISURFACE`.
++    pub fn is_gdi_surface(&self) -> bool {
++        (self.flags.load(Ordering::SeqCst) & ALLOCATION_FLAG_GDISURFACE) != 0
++    }
++
++    pub fn mark_gdi_surface(&self) {
++        self.flags.fetch_or(ALLOCATION_FLAG_GDISURFACE, Ordering::SeqCst);
++    }
++
++    /// Width/height of a classic 3D resource, for a full-surface upload.
++    pub fn dimensions(&self) -> Option<(u32, u32)> {
++        match &self.resource {
++            VirtioResource::_3D { width, height, .. } if *width != 0 && *height != 0 => Some((*width, *height)),
++            _ => None,
++        }
++    }
++
+     pub fn is_blob(&self) -> bool {
+         matches!(self.resource, VirtioResource::Blob { .. })
+     }
+diff --git a/gpu-wddm/src/bringup.rs b/gpu-wddm/src/bringup.rs
+index 89ca6f2..48aa775 100644
+--- a/gpu-wddm/src/bringup.rs
++++ b/gpu-wddm/src/bringup.rs
+@@ -21,7 +21,10 @@ pub mod runtime {
+         PresentLocalIneligibleStride, PresentLocalIneligibleFormatUnsupported,
+         PresentLocalIneligibleScaled,
+         PresentLocalIneligibleBounds, PresentLocalIneligibleDstNotAttached,
+-        StdAllocSharedPrimary, StdAllocShadow, StdAllocStaging, StdAllocOther,
++        StdAllocSharedPrimary, StdAllocShadow, StdAllocStaging, StdAllocGdiSurface, StdAllocOther,
++        // GDI redirection follow-up: what happened to each GDISURFACE resource
++        // after it was described (see `record_gdi`).
++        GdiOpenAllocation, GdiAttachBacking, GdiTransferToHost, GdiRenderSample,
+         // P1: fast path actually taken / mapping failed (fell back) / copies run.
+         PresentLocalTaken, PresentLocalMapFail, LocalCopyDone, LocalCopySyncFallback,
+         LocalCopyWake, LocalCopyPublish,
+@@ -111,7 +114,9 @@ pub mod runtime {
+                 "RtPresentLocalIneligibleStride", "RtPresentLocalIneligibleFormatUnsupported",
+                 "RtPresentLocalIneligibleScaled",
+                 "RtPresentLocalIneligibleBounds", "RtPresentLocalIneligibleDstNotAttached",
+-                "RtStdAllocSharedPrimary", "RtStdAllocShadow", "RtStdAllocStaging", "RtStdAllocOther",
++                "RtStdAllocSharedPrimary", "RtStdAllocShadow", "RtStdAllocStaging",
++                "RtStdAllocGdiSurface", "RtStdAllocOther",
++                "RtGdiOpenAllocation", "RtGdiAttachBacking", "RtGdiTransferToHost", "RtGdiRenderSample",
+                 "RtPresentLocalTaken", "RtPresentLocalMapFail", "RtLocalCopyDone", "RtLocalCopySyncFallback",
+                 "RtLocalCopyWake", "RtLocalCopyPublish",
+             ];
+@@ -252,3 +257,59 @@ pub fn record(name: &str, value: u32) {
+         ZwClose(handle);
+     }
+ }
++
++/// Write a GDISURFACE diagnostic where the test harness can read it even when
++/// the dedicated `Parameters\Bringup` key was not created or denies
++/// KEY_SET_VALUE: try the Bringup key first, then the service Parameters key,
++/// then the display class software keys.
++#[cfg(feature = "bringup-diagnostics")]
++pub fn record_gdi(name: &str, value: u32) {
++    const PATHS: [&str; 4] = [
++        "\\Registry\\Machine\\System\\CurrentControlSet\\Services\\VirtioGpu\\Parameters\\Bringup",
++        "\\Registry\\Machine\\System\\CurrentControlSet\\Services\\VirtioGpu\\Parameters",
++        "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0000",
++        "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0001",
++    ];
++    for path in PATHS {
++        if write_record_at(path, name, value) {
++            break;
++        }
++    }
++}
++
++#[cfg(feature = "bringup-diagnostics")]
++fn write_record_at(path: &str, name: &str, value: u32) -> bool {
++    use core::{mem::zeroed, ptr::null_mut};
++    use wdk::wdm::*;
++    if unsafe { KeGetCurrentIrql() } != 0 { return false; }
++
++    let mut path_buf: alloc::vec::Vec<u16> = path.encode_utf16().collect();
++    let mut key_name = UNICODE_STRING {
++        Length: (path_buf.len() * 2) as u16,
++        MaximumLength: (path_buf.len() * 2) as u16,
++        Buffer: path_buf.as_mut_ptr(),
++    };
++    let mut attrs: OBJECT_ATTRIBUTES = unsafe { zeroed() };
++    attrs.Length = core::mem::size_of::<OBJECT_ATTRIBUTES>() as u32;
++    attrs.ObjectName = &mut key_name;
++    attrs.Attributes = OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE;
++    let mut handle = null_mut();
++    let status = unsafe { ZwOpenKey(&mut handle, KEY_SET_VALUE, &mut attrs) };
++    if (status as i32) < 0 { return false; }
++
++    let mut name_buf: alloc::vec::Vec<u16> = name.encode_utf16().collect();
++    let mut value_name = UNICODE_STRING {
++        Length: (name_buf.len() * 2) as u16,
++        MaximumLength: (name_buf.len() * 2) as u16,
++        Buffer: name_buf.as_mut_ptr(),
++    };
++    let status = unsafe {
++        ZwSetValueKey(handle, &mut value_name, 0, REG_DWORD,
++                      (&value as *const u32).cast_mut().cast(), core::mem::size_of::<u32>() as u32)
++    };
++    unsafe { ZwClose(handle); }
++    (status as i32) >= 0
++}
++
++#[cfg(not(feature = "bringup-diagnostics"))]
++pub fn record_gdi(_name: &str, _value: u32) {}
+diff --git a/gpu-wddm/src/device.rs b/gpu-wddm/src/device.rs
+index eafedf1..b6866c6 100644
+--- a/gpu-wddm/src/device.rs
++++ b/gpu-wddm/src/device.rs
+@@ -869,8 +869,77 @@ impl Device {
+             let mut dma_priv = CommandDmaPrivate::new();
+             let mut nop = false;
+ 
++            // GDI redirection surfaces are filled by win32k/DWM through the CPU.
++            // The host never attaches guest backing into the GL texture for a
++            // classic 3D resource (mali_kbase_renderer.c has an empty
++            // attach_resource; vrend only reads guest iovecs on TRANSFER3D
++            // TO_HOST), so an explicit upload is the only way those pixels reach
++            // the texture the UMD samples. Emit one per GDISURFACE allocation in
++            // this submit, before the UMD commands.
++            let mut dmabuf_offset = 0usize;
++            for alloc_info in allocations {
++                let Some(device_specific): Option<&DeviceSpecificAllocation> = TaggedExt::from_handle(alloc_info.hDeviceSpecificAllocation) else {
++                    continue;
++                };
++                let Some(alloc) = device_specific.alloc.upgrade() else {
++                    continue;
++                };
++                if !alloc.is_gdi_surface() { continue; }
++
++                // A TRANSFER3D for a resource without backing makes vrend set
++                // ctx->in_error, after which vrend_hw_switch_context() refuses
++                // that context forever: every later draw is dropped and the
++                // screen goes black. Only upload once dxgkrnl has actually
++                // attached the pages.
++                if alloc.total_attached_bytes() < alloc.size() {
++                    use core::sync::atomic::AtomicU32;
++                    static GDI_UNBACKED: AtomicU32 = AtomicU32::new(0);
++                    crate::bringup::count("RtGdiUploadUnbacked", &GDI_UNBACKED);
++                    crate::bringup::record("GdiUnbackedAttachedBytes", alloc.total_attached_bytes() as u32);
++                    crate::bringup::record("GdiUnbackedSize", alloc.size() as u32);
++                    continue;
++                }
++
++                let Some(res_id) = alloc.id() else { continue };
++                // Same context the resource was attached to in
++                // DeviceSpecificAllocation::new (context_internal(false)).
++                let Some(context_id) = self.context() else {
++                    warn!("{}: no virtio context for GDISURFACE upload", function!());
++                    continue;
++                };
++                let Some((w, h)) = alloc.dimensions() else { continue };
++
++                let transfer = CommandTransfer {
++                    res_id: res_id.get(),
++                    // stride 0 lets vrend derive the row stride from the
++                    // resource format and width, which is the tight pitch
++                    // reported in GetStandardAllocationDriverData.
++                    stride: 0,
++                    offset: 0,
++                    level: 0,
++                    layer_stride: 0,
++                    r#box: Box3D { x: 0, y: 0, z: 0, width: w, height: h, depth: 1 },
++                };
++
++                let item = CommandBodyItem::TransferToHost(&transfer);
++                let needed = Command::item_dma_len(&item);
++                if needed > dmabuf.len() - dmabuf_offset {
++                    warn!("{}: no room for GDISURFACE upload ({} bytes)", function!(), needed);
++                    break;
++                }
++                let cmd = Command::from_item(&self.chan, context_id, &item, None, &mut dmabuf[dmabuf_offset..]);
++                dmabuf_offset += cmd.len();
++                dma_priv.commands.push(cmd);
++
++                use core::sync::atomic::AtomicU32;
++                static GDI_TRANSFERS: AtomicU32 = AtomicU32::new(0);
++                crate::bringup::count("RtGdiTransferToHost", &GDI_TRANSFERS);
++                crate::bringup::record("GdiLastTransferResId", res_id.get());
++                crate::bringup::record("GdiLastTransferW", w);
++                crate::bringup::record("GdiLastTransferH", h);
++            }
++
+             let mut command_offset = 0;
+-            let mut dmabuf_offset = 0;
+             while command_offset < command.len() {
+                 let (hdr, _) = CommandHeaderRaw::ref_from_prefix(&command[command_offset..]).map_err(|e| {
+                     error!("{}: failed to read raw command header: {:?}", function!(), e);
+diff --git a/gpu-wddm/src/lib.rs b/gpu-wddm/src/lib.rs
+index 5239017..a42cc9a 100644
+--- a/gpu-wddm/src/lib.rs
++++ b/gpu-wddm/src/lib.rs
+@@ -888,11 +888,13 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
+             D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_SHAREDPRIMARYSURFACE => Stat::StdAllocSharedPrimary,
+             D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_SHADOWSURFACE => Stat::StdAllocShadow,
+             D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_STAGINGSURFACE => Stat::StdAllocStaging,
++            D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_GDISURFACE => Stat::StdAllocGdiSurface,
+             _ => Stat::StdAllocOther,
+         });
+     }
+ 
+     let mut refresh_rate = D3DDDI_RATIONAL { Numerator: 0, Denominator: 0 };
++    let mut gdi_request = false;
+     let (width, height, size, format, flags) = match standard_allocation.StandardAllocationType {
+         D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_SHAREDPRIMARYSURFACE => {
+             let surface_data = unsafe { &*standard_allocation.__bindgen_anon_1.pCreateSharedPrimarySurfaceData };
+@@ -938,6 +940,84 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
+ 
+             (w, h, size, format.into(), flags.bits())
+         },
++        D3DKMDT_STANDARDALLOCATION_TYPE::D3DKMDT_STANDARDALLOCATION_GDISURFACE => {
++            // DWM's GDI redirection surface.  The contract is in d3dkmdt.h
++            // (D3DKMDT_GDISURFACEDATA) plus the D3DKMDT_GDISURFACETYPE docs:
++            //
++            //  * Pitch is an *out* field and must be returned for every CPU
++            //    visible type (STAGING_CPUVISIBLE, EXISTINGSYSMEM,
++            //    TEXTURE_CROSSADAPTER).  d3dkmdt.h:1403.
++            //  * Flags is reserved and "must be zero" (d3dkmdt.h:1368 defines
++            //    only a 32-bit Reserved bitfield), so it carries no request
++            //    bits to honour.
++            //  * Supported formats are A8R8G8B8 / X8R8G8B8 / A8B8G8R8 /
++            //    X8B8G8R8, plus A8 for the staging types only.
++            //
++            // TEXTURE_CPUVISIBLE is the only type win32k requests once
++            // SupportSoftwareDeviceBitmaps is advertised, and the D3DKMDT
++            // documentation marks it "reserved for system use", i.e. the OS
++            // owns both the creation and the sampling.  The previous
++            // implementation described it as a plain CPU-visible 3D render
++            // target with tight pitch and the SHADOW/STAGING bind set; the
++            // guest then sampled an uninitialised host texture (full-screen
++            // black) because nothing ever uploaded the GDI bytes.
++            //
++            // Describe it as a *sampleable* texture that also keeps the
++            // display/scanout bits every standard allocation has used so far,
++            // and report the pitch actually derived from the format so the
++            // guest mapping and the host stride cannot disagree.
++            let surface_data = unsafe { &mut *standard_allocation.__bindgen_anon_1.pCreateGdiSurfaceData };
++            gdi_request = true;
++
++            let w = surface_data.Width;
++            let h = surface_data.Height;
++            let gdi_type: u32 = unsafe { transmute(surface_data.Type) };
++            let gdi_flags: u32 = unsafe { transmute(surface_data.Flags) };
++            let gdi_format: u32 = unsafe { transmute(surface_data.Format) };
++
++            let mut format = VirglFormat::from(surface_data.Format);
++            if format.0 == VIRGL_FORMAT_NONE {
++                // Only reachable for a format the OS is not documented to send;
++                // X8R8G8B8 is the GDI default for redirection surfaces.
++                warn!("{}: GDISURFACE format {:?} has no virgl mapping; using B8G8R8X8", function!(), surface_data.Format);
++                format = VirglFormat(VIRGL_FORMAT_B8G8R8X8_UNORM);
++            }
++
++            bringup::record_gdi("GdiSurfaceType", gdi_type);
++            bringup::record_gdi("GdiSurfaceFlags", gdi_flags);
++            bringup::record_gdi("GdiSurfaceWidth", w);
++            bringup::record_gdi("GdiSurfaceHeight", h);
++            bringup::record_gdi("GdiSurfaceFormat", gdi_format);
++
++            if w == 0 || h == 0 {
++                error!("{}: GDISURFACE invalid size {}x{} type={} flags=0x{:08x}", function!(), w, h, gdi_type, gdi_flags);
++                bringup::record_gdi("GdiSurfaceReturnStatus", STATUS::INVALID_PARAMETER.to_u32());
++                return STATUS::INVALID_PARAMETER.to_u32();
++            }
++
++            // Tightly packed rows: 4 bytes per pixel for every supported format.
++            // The host derives its stride from Width * 4 too, so a padded pitch
++            // would desynchronise guest mapping and host texture rows.
++            let pitch = w.saturating_mul(4);
++            let size = (pitch as u64) * (h as u64);
++            surface_data.Pitch = pitch;
++            let flags = VirglFlags::MAP_COHERENT;
++
++            {
++                use core::sync::atomic::{AtomicU32, Ordering};
++                static GDI_CALLS: AtomicU32 = AtomicU32::new(0);
++                let call = GDI_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
++                bringup::record_gdi("GdiSurfaceCallCount", call);
++            }
++            bringup::record_gdi("GdiSurfacePitch", pitch);
++            bringup::record_gdi("GdiSurfaceSizeLo", size as u32);
++            error!(
++                "{}: GDISURFACE type={} format=0x{:08x} flags=0x{:08x} {}x{} pitch={} size={}",
++                function!(), gdi_type, gdi_format, gdi_flags, w, h, pitch, size
++            );
++
++            (w, h, size, format.into(), flags.bits())
++        },
+         _ => {
+             error!("{}: unsupported standard allocation type {:?}", function!(), standard_allocation.StandardAllocationType);
+             return STATUS::NOT_SUPPORTED.to_u32();
+@@ -950,14 +1030,27 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
+     let standard_data = unsafe { &mut *(standard_allocation.pAllocationPrivateDriverData as *mut allocation::StandardAllocationData) };
+     standard_data.tag = allocation::STANDARD_ALLOCATION_TAG;
+     standard_data.refresh_rate = refresh_rate;
++    standard_data.kind = if gdi_request { allocation::STANDARD_ALLOCATION_KIND_GDISURFACE } else { 0 };
+     let alloc_priv = &mut standard_data.allocation;
+ 
+     let alloc_3d = unsafe { &mut alloc_priv._3d };
++    // A GDISURFACE is sampled by DWM after win32k fills it from the CPU.  It is
++    // never a scanout surface of this driver (the OS composites it into the
++    // DWM texture first), so do not claim SCANOUT: with minigbm unavailable the
++    // scanout bit only makes vrend attempt an external (gbm) allocation that it
++    // then cannot create.  LINEAR states what the surface really is -- CPU
++    // visible rows that the driver must transfer -- and keeps it inside the
++    // bind set vrend accepts for textures (virglrenderer check_resource_valid).
++    let bind = if gdi_request {
++        VirglBind::RENDER_TARGET | VirglBind::SAMPLER_VIEW | VirglBind::LINEAR
++    } else {
++        VirglBind::RENDER_TARGET | VirglBind::SAMPLER_VIEW | VirglBind::DISPLAY_TARGET | VirglBind::SCANOUT
++    };
+     *alloc_3d = Allocate3d {
+         tag: uapi::ALLOCATE_3D_TAG,
+         target: VIRGL_TARGET_TEXTURE_2D,
+         format,
+-        bind: (VirglBind::RENDER_TARGET | VirglBind::SAMPLER_VIEW | VirglBind::DISPLAY_TARGET | VirglBind::SCANOUT).bits(),
++        bind: bind.bits(),
+         width,
+         height,
+         depth: 1,
+@@ -967,9 +1060,15 @@ unsafe extern "C" fn get_standard_allocation_driver_data(adapter: HANDLE, standa
+         flags,
+         size,
+     };
++    if gdi_request {
++        bringup::record_gdi("GdiSurfaceBind", bind.bits());
++    }
+ 
+     debug!("{}: standard allocation -> {:?}", function!(), allocation::VirtioResource::from(unsafe { alloc_priv._3d }));
+ 
++    if gdi_request {
++        bringup::record_gdi("GdiSurfaceReturnStatus", STATUS::SUCCESS.to_u32());
++    }
+     STATUS::SUCCESS.to_u32()
+ }
+ 
