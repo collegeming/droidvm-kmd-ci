@@ -1,0 +1,276 @@
+diff --git a/gpu-wddm/src/adapter.rs b/gpu-wddm/src/adapter.rs
+index 67b7c5e..ec3a462 100644
+--- a/gpu-wddm/src/adapter.rs
++++ b/gpu-wddm/src/adapter.rs
+@@ -1153,6 +1153,14 @@ impl Adapter {
+             if option == 0 {
+                 warn!("{}: PresentLocalCopy disabled by registry", function!());
+             }
++
++            // A/B switch for the DxgkDdiRender upload of GDI shadow surfaces.
++            let transfer = crate::bringup::read_parameter("RenderTransferEnabled").unwrap_or(1);
++            crate::device::set_render_transfer(transfer != 0);
++            diag::set(Slot::RenderTransferOption, transfer);
++            if transfer == 0 {
++                warn!("{}: RenderTransferEnabled disabled by registry", function!());
++            }
+         }
+ 
+         // The adapter software-key path arrives with DXGK_DEVICE_INFO below;
+@@ -1895,6 +1903,7 @@ impl Adapter {
+             },
+ 
+             ESCAPE_EXEC_BUF_TAG => {
++                crate::bringup::runtime::hit(crate::bringup::runtime::Stat::EscapeExecBuf);
+                 let exec_buffer = check_buffer_size!(escape.pPrivateDriverData, escape.PrivateDriverDataSize, ExecBuffer)?;
+                 let priv_size = escape.PrivateDriverDataSize as usize;
+ 
+diff --git a/gpu-wddm/src/bringup.rs b/gpu-wddm/src/bringup.rs
+index 89ca6f2..9789169 100644
+--- a/gpu-wddm/src/bringup.rs
++++ b/gpu-wddm/src/bringup.rs
+@@ -25,6 +25,18 @@ pub mod runtime {
+         // P1: fast path actually taken / mapping failed (fell back) / copies run.
+         PresentLocalTaken, PresentLocalMapFail, LocalCopyDone, LocalCopySyncFallback,
+         LocalCopyWake, LocalCopyPublish,
++        // GDI shadow upload from DxgkDdiRender: the UMD's 3D command stream
++        // samples the redirection surface without ever reaching present().
++        // Enter counts submissions into render(); Total counts the individual
++        // TRANSFER3D commands written into the DMA buffer.
++        RenderEnter, RenderTransferEnter, RenderTransferTotal,
++        RenderTransferSkippedNoBacking, RenderTransferSkippedNot3d,
++        RenderTransferSkippedNotCoherent, RenderTransferSkippedContext,
++        /// UMD command streams that reach the host through the private
++        /// EXEC_BUF escape instead of DxgkDdiRender. Attribute the render()
++        /// upload counters against this before concluding they cover the
++        /// compositor's draws.
++        EscapeExecBuf,
+         Count,
+     }
+ 
+@@ -47,6 +59,10 @@ pub mod runtime {
+         LocalCopyRunFence, LocalCopyDoneFence, LocalCopyDoneLastCompleted,
+         LocalCopyMapFailSide, LocalCopyMapFailStatus,
+         LocalCopySumUs, LocalCopyWaitLastUs, LocalCopyWaitMaxUs, LocalCopyWaitSumUs,
++        /// Per-submission shape of DxgkDdiRender, and the last upload written.
++        RenderAllocListLen, RenderCommandLen, RenderTransferAllocCount,
++        RenderTransferResId, RenderTransferBytes, RenderTransferOption,
++        RenderTransferSkippedNoRoom,
+         Count,
+     }
+ 
+@@ -114,6 +130,11 @@ pub mod runtime {
+                 "RtStdAllocSharedPrimary", "RtStdAllocShadow", "RtStdAllocStaging", "RtStdAllocOther",
+                 "RtPresentLocalTaken", "RtPresentLocalMapFail", "RtLocalCopyDone", "RtLocalCopySyncFallback",
+                 "RtLocalCopyWake", "RtLocalCopyPublish",
++                "RtRenderEnter",
++                "RtRenderTransferEnter", "RtRenderTransferTotal",
++                "RtRenderTransferSkippedNoBacking", "RtRenderTransferSkippedNot3d",
++                "RtRenderTransferSkippedNotCoherent", "RtRenderTransferSkippedContext",
++                "RtEscapeExecBuf",
+             ];
+             const SLOT_NAMES: [&str; Slot::Count as usize] = [
+                 "RtPresentLastSrcFormat", "RtPresentLastDstFormat",
+@@ -131,6 +152,9 @@ pub mod runtime {
+                 "RtLocalCopyRunFence", "RtLocalCopyDoneFence", "RtLocalCopyDoneLastCompleted",
+                 "RtLocalCopyMapFailSide", "RtLocalCopyMapFailStatus",
+                 "RtLocalCopySumUs", "RtLocalCopyWaitLastUs", "RtLocalCopyWaitMaxUs", "RtLocalCopyWaitSumUs",
++                "RtRenderAllocListLen", "RtRenderCommandLen", "RtRenderTransferAllocCount",
++                "RtRenderTransferResId", "RtRenderTransferBytes", "RtRenderTransferOption",
++                "RtRenderTransferSkippedNoRoom",
+             ];
+             super::record("RuntimeDiagnosticsRevision", 993);
+             for (name, counter) in NAMES.iter().zip(COUNTERS.iter()) {
+diff --git a/gpu-wddm/src/device.rs b/gpu-wddm/src/device.rs
+index eafedf1..e908835 100644
+--- a/gpu-wddm/src/device.rs
++++ b/gpu-wddm/src/device.rs
+@@ -57,6 +57,19 @@ pub fn set_present_local_copy(enabled: bool) {
+     PRESENT_LOCAL_COPY.store(enabled, core::sync::atomic::Ordering::Relaxed);
+ }
+ 
++/// Registry `Services\VirtioGpu\Parameters\RenderTransferEnabled` (REG_DWORD,
++/// default 1): 0 disables the GDI shadow upload that `render()` prepends to the
++/// UMD command stream, so the two builds can be A/B compared on one image.
++static RENDER_TRANSFER: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
++
++pub fn render_transfer_enabled() -> bool {
++    RENDER_TRANSFER.load(core::sync::atomic::Ordering::Relaxed)
++}
++
++pub fn set_render_transfer(enabled: bool) {
++    RENDER_TRANSFER.store(enabled, core::sync::atomic::Ordering::Relaxed);
++}
++
+ /// Output of the present fast-path admission check.
+ struct LocalCopyParams {
+     src_stride: u32,
+@@ -815,8 +828,142 @@ impl Device {
+         Ok(())
+     }
+ 
++    /// Whole-resource `TRANSFER_TO_HOST_3D` commands for the MAP_COHERENT 3D
++    /// allocations this submission references.
++    ///
++    /// win32k draws classic GDI into a redirection surface (a SHADOW standard
++    /// allocation, i.e. a MAP_COHERENT 3D resource) and DWM then samples that
++    /// surface through the UMD's own 3D command stream. That stream reaches the
++    /// host through `DxgkDdiEscape`/`DxgkDdiSubmitCommand`, never through
++    /// `DxgkDdiPresent`, so nothing uploads the CPU-written pixels into the
++    /// host GL texture and every draw samples an empty surface. Prepend one
++    /// upload per referenced surface, in the same submission and on the same
++    /// virgl context as the draws that sample it.
++    ///
++    /// Returns the commands written at the front of `render.pDmaBuffer` and the
++    /// number of bytes they occupy; the caller starts writing the UMD stream at
++    /// that offset, so one base pointer, one length and one final advance stay in
++    /// effect. Only the insufficient-buffer error advances `pDmaBuffer`, which is
++    /// the convention `present()` uses to make dxgkrnl grow the allocation.
++    fn render_transfer_prefix(&self, render: &mut DXGKARG_RENDER) -> Result<(SmallVec<[Command; 4]>, usize), NtStatus> {
++        use crate::bringup::runtime::{self as diag, Slot, Stat};
++
++        let mut commands: SmallVec<[Command; 4]> = SmallVec::new();
++
++        diag::hit(Stat::RenderTransferEnter);
++        diag::set(Slot::RenderAllocListLen, render.AllocationListSize);
++        diag::set(Slot::RenderCommandLen, render.CommandLength);
++
++        if render.AllocationListSize == 0 || render.pAllocationList.is_null() || render.pDmaBuffer.is_null() {
++            return Ok((commands, 0));
++        }
++
++        // Every upload must share one context: the resources are attached to
++        // the virgl context in `context_virgl()`, and a TRANSFER3D carrying a
++        // different context id would not find them.
++        let Some((context_id, _)) = self.context_virgl() else {
++            debug!("{}: no virgl context yet, skipping upload", function!());
++            diag::hit(Stat::RenderTransferSkippedContext);
++            return Ok((commands, 0));
++        };
++
++        struct Candidate { res_id: NonZero<u32>, width: u32, height: u32, size: u64 }
++
++        let allocations = slice_from_raw_parts(render.pAllocationList, render.AllocationListSize as _);
++        let mut candidates: SmallVec<[Candidate; 4]> = SmallVec::new();
++        let mut seen: SmallVec<[u32; 8]> = SmallVec::new();
++
++        for alloc_info in allocations {
++            let Some(device_specific): Option<&DeviceSpecificAllocation> = TaggedExt::from_handle(alloc_info.hDeviceSpecificAllocation) else {
++                // Reported as INVALID_HANDLE by the main validation loop.
++                continue;
++            };
++            let Some(alloc) = device_specific.alloc.upgrade() else {
++                continue;
++            };
++            let Some(res_id) = alloc.id() else {
++                continue;
++            };
++
++            let VirtioResource::_3D { flags, width, height, .. } = alloc.resource() else {
++                diag::hit(Stat::RenderTransferSkippedNot3d);
++                continue;
++            };
++            if !flags.contains(VirglFlags::MAP_COHERENT) {
++                // Shared primaries are written by the GPU, not the CPU.
++                diag::hit(Stat::RenderTransferSkippedNotCoherent);
++                continue;
++            }
++            // vrend rejects a transfer whose resource has no attached iovec,
++            // and the rejection is a sticky context error.
++            if alloc.total_attached_bytes() < alloc.size() {
++                diag::hit(Stat::RenderTransferSkippedNoBacking);
++                continue;
++            }
++            if seen.contains(&res_id.get()) {
++                continue;
++            }
++            seen.push(res_id.get());
++
++            candidates.push(Candidate { res_id, width: *width, height: *height, size: alloc.size() as u64 });
++        }
++
++        diag::set(Slot::RenderTransferAllocCount, candidates.len() as u32);
++        if candidates.is_empty() {
++            return Ok((commands, 0));
++        }
++
++        let make_transfer = |candidate: &Candidate| CommandTransfer {
++            res_id: candidate.res_id.get(),
++            stride: 0,
++            offset: 0,
++            level: 0,
++            layer_stride: 0,
++            r#box: Box3D {
++                x: 0,
++                y: 0,
++                z: 0,
++                width:  candidate.width,
++                height: candidate.height,
++                depth:  1,
++            },
++        };
++
++        // The buffer also has to hold the UMD's own command stream, so the
++        // uploads must leave room for it. Each one is a single fixed-size
++        // virtio-gpu header, and a buffer smaller than they are alone cannot be
++        // grown by dxgkrnl any further; drop the uploads instead of failing
++        // every render with GRAPHICS_INSUFFICIENT_DMA_BUFFER.
++        let transfer_bytes = Command::item_dma_len(&CommandBodyItem::TransferToHost(&make_transfer(&candidates[0]))) * candidates.len();
++        if transfer_bytes > render.DmaSize as usize {
++            error!("{}: {} uploads need {} bytes, but the dma buffer is {} bytes", function!(), candidates.len(), transfer_bytes, render.DmaSize);
++            diag::set(Slot::RenderTransferSkippedNoRoom, transfer_bytes as u32);
++            return Ok((commands, 0));
++        }
++
++        let dmabuf = slice_from_raw_parts_mut(render.pDmaBuffer as *mut u8, render.DmaSize as _);
++        let mut dmabuf_offset = 0;
++
++        for candidate in candidates {
++            let transfer = make_transfer(&candidate);
++            let item = CommandBodyItem::TransferToHost(&transfer);
++            let cmd = Command::from_item(&self.chan, Some(context_id), &item, None, &mut dmabuf[dmabuf_offset..]);
++            dmabuf_offset += cmd.len();
++            commands.push(cmd);
++
++            diag::set(Slot::RenderTransferResId, candidate.res_id.get());
++            diag::set(Slot::RenderTransferBytes, candidate.size.min(u32::MAX as u64) as u32);
++            diag::hit(Stat::RenderTransferTotal);
++        }
++
++        // The main loop advances pDmaBuffer past everything written, uploads
++        // included, so it must not be advanced here as well.
++        Ok((commands, dmabuf_offset))
++    }
++
+     pub fn render(&self, render: &mut DXGKARG_RENDER) -> Result<(), NtStatus> {
+         trace!("{}: commands length: {}", function!(), render.CommandLength);
++        crate::bringup::runtime::hit(crate::bringup::runtime::Stat::RenderEnter);
+ 
+         let dma_priv = match microseh::try_seh(|| -> Result<CommandDmaPrivate, NtStatus> {
+             let patchloc_in = slice_from_raw_parts(render.pPatchLocationListIn, render.PatchLocationListInSize as _);
+@@ -864,13 +1011,24 @@ impl Device {
+                 return Err(NtStatus(STATUS::INVALID_HANDLE));
+             }
+ 
++            // Same SEH guard as the allocation-list walk above: this reads the
++            // same dxgkrnl-supplied pointers and writes into pDmaBuffer.
++            let (transfer_commands, transfer_bytes) = if render_transfer_enabled() {
++                self.render_transfer_prefix(render)?
++            } else {
++                (SmallVec::new(), 0)
++            };
++
+             let command = slice_from_raw_parts(render.pCommand as *const u8, render.CommandLength as _);
+             let dmabuf = slice_from_raw_parts_mut(render.pDmaBuffer as *mut u8, render.DmaSize as _);
+             let mut dma_priv = CommandDmaPrivate::new();
++            // Uploads go first so the draws in this submission already sample
++            // the freshly written surface.
++            dma_priv.commands.extend(transfer_commands.iter().cloned());
+             let mut nop = false;
+ 
+             let mut command_offset = 0;
+-            let mut dmabuf_offset = 0;
++            let mut dmabuf_offset = transfer_bytes;
+             while command_offset < command.len() {
+                 let (hdr, _) = CommandHeaderRaw::ref_from_prefix(&command[command_offset..]).map_err(|e| {
+                     error!("{}: failed to read raw command header: {:?}", function!(), e);
