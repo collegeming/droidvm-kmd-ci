@@ -169,7 +169,7 @@ index 89ca6f2..48aa775 100644
 +#[cfg(not(feature = "bringup-diagnostics"))]
 +pub fn record_gdi(_name: &str, _value: u32) {}
 diff --git a/gpu-wddm/src/device.rs b/gpu-wddm/src/device.rs
-index eafedf1..b6866c6 100644
+index eafedf1..d64ba74 100644
 --- a/gpu-wddm/src/device.rs
 +++ b/gpu-wddm/src/device.rs
 @@ -869,8 +869,77 @@ impl Device {
@@ -234,7 +234,7 @@ index eafedf1..b6866c6 100644
 +                    warn!("{}: no room for GDISURFACE upload ({} bytes)", function!(), needed);
 +                    break;
 +                }
-+                let cmd = Command::from_item(&self.chan, context_id, &item, None, &mut dmabuf[dmabuf_offset..]);
++                let cmd = Command::from_item(&self.chan, Some(context_id), &item, None, &mut dmabuf[dmabuf_offset..]);
 +                dmabuf_offset += cmd.len();
 +                dma_priv.commands.push(cmd);
 +
