@@ -49,9 +49,10 @@ case "$PATCH_KIND" in
   gdi-surface-diag) PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch gdi-surface.patch); FEATURES="--features bringup-diagnostics" ;;
   gdi-caps)   PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch gdi-surface.patch presentation-caps.patch); FEATURES="--features bringup-diagnostics" ;;
   gdi-surface-v2) PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch presentation-caps.patch gdi-surface-v2.patch); FEATURES="--features bringup-diagnostics" ;;
+  gdi-replicate) PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch replicate-gdi.patch); FEATURES="--features bringup-diagnostics" ;;
   gdi)        PATCH_FILES=(kmd-attach-detach.patch) ;;
   both)       PATCH_FILES=(gpu-identity.patch kmd-attach-detach.patch) ;;
-  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|identity-v2|cursor-hide|cursor-color|cursor-software|all|final-a2|gdi-surface|gdi-surface-diag|gdi-caps|gdi-surface-v2|gdi|both)"; exit 2 ;;
+  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|identity-v2|cursor-hide|cursor-color|cursor-software|all|final-a2|gdi-surface|gdi-surface-diag|gdi-caps|gdi-surface-v2|gdi-replicate|gdi|both)"; exit 2 ;;
 esac
 {
   echo "variant=$VARIANT patch=$PATCH_KIND"
@@ -66,6 +67,7 @@ esac
       gdi-surface.patch)      EXPECTED=$GDI_SURFACE_PATCH_SHA256 ;;
       gdi-surface-v2.patch)   EXPECTED=$GDI_SURFACE_V2_PATCH_SHA256 ;;
       presentation-caps.patch) EXPECTED=$PRESENTATION_CAPS_PATCH_SHA256 ;;
+      replicate-gdi.patch)    EXPECTED=$REPLICATE_GDI_PATCH_SHA256 ;;
       *) echo "ERROR: no pinned sha for $pf"; exit 1 ;;
     esac
     PATCH_FILE=$ROOT/patches/$pf
@@ -116,6 +118,7 @@ fi
   echo "patch_gdi_sha256=$GDI_PATCH_SHA256"
   echo "patch_gdi_surface_sha256=$GDI_SURFACE_PATCH_SHA256"
   echo "patch_gdi_surface_v2_sha256=${GDI_SURFACE_V2_PATCH_SHA256:-none}"
+  echo "patch_replicate_gdi_sha256=${REPLICATE_GDI_PATCH_SHA256:-none}"
   echo "features=${FEATURES:-none}"
   echo "rustc=$(rustc -V | tr '\n' ' ')"
   echo "cbindgen=$(cbindgen --version)"

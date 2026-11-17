@@ -1,0 +1,55 @@
+diff --git a/gpu-wddm/src/adapter.rs b/gpu-wddm/src/adapter.rs
+index 67b7c5e..2f29137 100644
+--- a/gpu-wddm/src/adapter.rs
++++ b/gpu-wddm/src/adapter.rs
+@@ -1432,6 +1432,50 @@ impl Adapter {
+                 driver_caps.PointerCaps.set_Color(true);
+                 driver_caps.PointerCaps.set_MaskedColor(false);
+ 
++                // GDI redirection. win32k draws classic-GDI client areas on the
++                // CPU into a redirection surface that the compositor samples
++                // afterwards. This driver has no GDI hardware acceleration -- the
++                // DDI table carries neither DxgkDdiRenderKm nor DxgkDdiRenderGdi
++                // -- so the two bits of that pair stay zero:
++                // SupportKernelModeCommandBuffer (bit 2) and
++                // SupportSoftwareDeviceBitmaps (bit 28, documented as reserved and
++                // required to be zero).
++                //
++                // Declare the two WDDM 2.0 capabilities that carry GDI content to
++                // the GPU without GDI acceleration:
++                //
++                // DXGK_PRESENTATIONCAPS.DriverSupportsCddDwmInterop (bit 8):
++                // "whether the display miniport driver supports Canonical Display
++                // Driver (CDD) present operations to texture allocations that are
++                // created by the user-mode driver for the Desktop Windows Manager
++                // (DWM) to use". The CDD then hands the GDI content to the KMD as
++                // an ordinary present into a DWM texture, which is exactly what
++                // DxgkDdiPresent implements here (blt to any allocation).
++                //
++                // DXGK_VIDMMCAPS.ReplicateGdiContent (bit 8 of the VidMm word):
++                // "whether the adapter supports the replication of GDI content".
++                // d3dkmddi.h defines no DDI for it, so the copy is VidMm's own
++                // work and the driver only declares the capability.
++                //
++                // wdk/src/dxgkrnl.rs carries hand-written set_* wrappers only for
++                // the VidMm bits 3/5/6/7 and none for PresentationCaps, so write
++                // the documented bits through each union's UINT storage.
++                unsafe {
++                    let pres: *mut u32 = (&raw mut driver_caps.PresentationCaps).cast();
++                    pres.write_unaligned(pres.read_unaligned() | (1u32 << 8));
++
++                    let vidmm: *mut u32 = (&raw mut driver_caps.MemoryManagementCaps).cast();
++                    vidmm.write_unaligned(vidmm.read_unaligned() | (1u32 << 8));
++                }
++                crate::bringup::record("VidMmCapsReplicateGdi", 1);
++                crate::bringup::record("PresCapsCddDwmInterop", 1);
++                crate::bringup::record("PresCapsRaw", unsafe {
++                    *(&raw const driver_caps.PresentationCaps).cast::<u32>()
++                });
++                crate::bringup::record("VidMmCapsRaw", unsafe {
++                    *(&raw const driver_caps.MemoryManagementCaps).cast::<u32>()
++                });
++
+                 Ok(())
+             },
+             DXGK_QUERYADAPTERINFOTYPE::DXGKQAITYPE_QUERYSEGMENT3 => {
