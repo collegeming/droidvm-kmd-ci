@@ -1,0 +1,31 @@
+diff --git a/gpu-wddm/src/adapter.rs b/gpu-wddm/src/adapter.rs
+index 67b7c5e..869e594 100644
+--- a/gpu-wddm/src/adapter.rs
++++ b/gpu-wddm/src/adapter.rs
+@@ -1432,6 +1432,26 @@ impl Adapter {
+                 driver_caps.PointerCaps.set_Color(true);
+                 driver_caps.PointerCaps.set_MaskedColor(false);
+ 
++                // GDI redirection: win32k only requests
++                // D3DKMDT_STANDARDALLOCATION_GDISURFACE when the driver advertises
++                // CPU-visible redirection bitmaps, and the Blt pitch alignment must
++                // be at least 4 bytes.
++                //
++                // wdk/src/dxgkrnl.rs carries no hand-written DXGK_PRESENTATIONCAPS
++                // wrapper (unlike FlipCaps/VidMmCaps), so bindgen's set_* helper for
++                // these bitfields is unreachable here. Write the documented bits
++                // through the union's UINT storage instead:
++                // AlignmentShift = bits 10..13 (2 => 4-byte pitch alignment),
++                // SupportSoftwareDeviceBitmaps = bit 28.
++                unsafe {
++                    let caps: *mut u32 = (&raw mut driver_caps.PresentationCaps).cast();
++                    let bits = caps.read_unaligned();
++                    let bits = (bits & !(0xFu32 << 10)) | (2u32 << 10) | (1u32 << 28);
++                    caps.write_unaligned(bits);
++                }
++                crate::bringup::record("PresentationCapsAlignmentShift", 2);
++                crate::bringup::record("PresentationCapsSoftBitmaps", 1);
++
+                 Ok(())
+             },
+             DXGK_QUERYADAPTERINFOTYPE::DXGKQAITYPE_QUERYSEGMENT3 => {

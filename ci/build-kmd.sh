@@ -47,9 +47,10 @@ case "$PATCH_KIND" in
   final-a2)   PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch) ;;
   gdi-surface) PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch gdi-surface.patch) ;;
   gdi-surface-diag) PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch gdi-surface.patch); FEATURES="--features bringup-diagnostics" ;;
+  gdi-caps)   PATCH_FILES=(gpu-identity-v2.patch cursor-color.patch kmd-attach-detach.patch gdi-surface.patch presentation-caps.patch); FEATURES="--features bringup-diagnostics" ;;
   gdi)        PATCH_FILES=(kmd-attach-detach.patch) ;;
   both)       PATCH_FILES=(gpu-identity.patch kmd-attach-detach.patch) ;;
-  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|identity-v2|cursor-hide|cursor-color|cursor-software|all|final-a2|gdi-surface|gdi-surface-diag|gdi|both)"; exit 2 ;;
+  *) echo "ERROR: unknown PATCH=$PATCH_KIND (expected none|identity|identity-v2|cursor-hide|cursor-color|cursor-software|all|final-a2|gdi-surface|gdi-surface-diag|gdi-caps|gdi|both)"; exit 2 ;;
 esac
 {
   echo "variant=$VARIANT patch=$PATCH_KIND"
@@ -62,6 +63,7 @@ esac
       cursor-software.patch) EXPECTED=$CURSOR_SOFTWARE_PATCH_SHA256 ;;
       kmd-attach-detach.patch) EXPECTED=$GDI_PATCH_SHA256 ;;
       gdi-surface.patch)      EXPECTED=$GDI_SURFACE_PATCH_SHA256 ;;
+      presentation-caps.patch) EXPECTED=$PRESENTATION_CAPS_PATCH_SHA256 ;;
       *) echo "ERROR: no pinned sha for $pf"; exit 1 ;;
     esac
     PATCH_FILE=$ROOT/patches/$pf
